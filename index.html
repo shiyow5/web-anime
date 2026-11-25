@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="three.js と anime.js で作った、サイトに組み込めるアニメーション素材の見本帳です。" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%276%27 fill=%27%2314161f%27/%3E%3Ccircle cx=%2716%27 cy=%2716%27 r=%277%27 fill=%27%23ffd83d%27/%3E%3C/svg%3E" />
+    <title>動きの見本帳</title>
+  </head>
+  <body>
+    <header class="masthead">
+      <h1 class="masthead__title">動きの見本帳</h1>
+      <p class="masthead__lead">
+        three.js と anime.js で作った、サイトに組み込めるアニメーション素材が <strong><span id="lead-count">19</span> 点</strong>あります。枠の中では実物が動いています。ポインターを乗せて試し、気に入ったものを開いてください。
+      </p>
+    </header>
+    <nav class="filter" id="filter" aria-label="分類で絞り込む"></nav>
+    <main class="sheet" id="sheet"></main>
+    <footer class="colophon">
+      <section>
+        <h2>使い方</h2>
+        <p>素材を開くと、色や速さを変えながら試せます。決まったら、貼り付け用のコードをコピーしてください。どの素材も <code>mount(要素, 設定)</code> で始まり、<code>destroy()</code> で片付きます。</p>
+      </section>
+      <section>
+        <h2>動きを減らす設定への対応</h2>
+        <p>OS で「視差効果を減らす」を選んでいる人には、動きを止めた状態を表示します。画面の外に出た素材は描画を止めるので、ページに何点置いても負荷が増え続けません。</p>
+      </section>
+    </footer>
+    <script type="module" src="/src/gallery/main.js"></script>
+  </body>
+</html>

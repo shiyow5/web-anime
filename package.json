@@ -1,0 +1,27 @@
+{
+  "name": "web-anime",
+  "version": "1.0.0",
+  "description": "three.js と anime.js で作った、サイトに組み込めるアニメーション素材集",
+  "scripts": {
+    "test": "vitest run",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "coverage": "vitest run --coverage",
+    "e2e": "playwright test"
+  },
+  "dependencies": {
+    "@fontsource-variable/bricolage-grotesque": "^5.3.0",
+    "animejs": "^4.5.0",
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.1",
+    "@vitest/coverage-v8": "^5.1.1",
+    "happy-dom": "^21.0.4",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.1"
+  },
+  "type": "module",
+  "private": true
+}
