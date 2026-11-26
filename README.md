@@ -18,7 +18,7 @@ https://shiyow5.github.io/web-anime/
 | **文字のジャイロ** | **ドット絵の回る立方体** |
 | ![ascii-gyro](docs/media/ascii-gyro.gif) | ![pixel-gyro-cube](docs/media/pixel-gyro-cube.gif) |
 
-GIFはGPUを使わない環境で撮ったので、コマ数が少なく、実際より粗く見えます。実機ではもっとなめらかです。
+どのGIFも、始まって1秒あまりのところで中央を1回タップしています。GIFは毎秒12.5コマで色数も絞っているので、実機ではもっとなめらかで、光のにじみもきれいに出ます。
 
 ## 立体の作り方の基準
 
