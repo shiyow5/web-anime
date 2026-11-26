@@ -5,8 +5,14 @@ import { resolveParam } from '../../src/lib/params.js';
 const PARAM_TYPES = ['range', 'color', 'select', 'text', 'boolean'];
 
 describe('素材の一覧', () => {
-  it('35 点の素材が載っている', () => {
-    expect(assets).toHaveLength(35);
+  it('122 点の素材が載っている', () => {
+    expect(assets).toHaveLength(122);
+  });
+
+  it('先頭は副文字盤が浮かぶ時計で、先頭に置く 36 点より後ろは同じ分類が続かない', () => {
+    expect(assets[0].id).toBe('holo-chronograph');
+    const rest = assets.slice(36, 36 + 34);
+    for (let i = 1; i < rest.length; i += 1) expect(rest[i].category, rest[i].id).not.toBe(rest[i - 1].category);
   });
 
   it('id は重複せず、ファイル名と一致する', () => {

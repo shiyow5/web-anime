@@ -82,8 +82,9 @@ for (const id of assetIds) {
   });
 }
 
+// 素材の点数に比例して時間がかかる。GPU の無い環境で 122 点を 4 回ずつ表示できるだけの余裕を取る。
 test('全素材を 4 回ずつ表示して片付けても、要素・イベント・タイマーが残らない', async ({ page }) => {
-  test.setTimeout(240_000);
+  test.setTimeout(1_500_000);
   const problems = collectProblems(page);
   await page.goto('/demo.html?id=none');
   const report = await page.evaluate(async () => {
@@ -176,7 +177,7 @@ test('全素材を 4 回ずつ表示して片付けても、要素・イベン�
 });
 
 test('一覧を端まで往復しても、WebGL の上限に当たらない', async ({ page }) => {
-  test.setTimeout(240_000);
+  test.setTimeout(900_000);
   const problems = collectProblems(page);
   await page.goto('/');
   const height = await page.evaluate(() => document.documentElement.scrollHeight);

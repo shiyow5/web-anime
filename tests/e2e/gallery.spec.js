@@ -27,8 +27,8 @@ test('一覧にすべての素材が並び、分類で絞り込める', async ({
   await expect(page.locator('#lead-count')).toHaveText(String(assetIds.length));
 
   await page.getByRole('button', { name: /ローダー/ }).click();
-  await expect(page.locator('.tile:visible')).toHaveCount(1);
-  await expect(page.locator('.tile:visible .tile__title')).toHaveText('ローダー 6 種');
+  await expect(page.locator('.tile:visible')).toHaveCount(3);
+  await expect(page.locator('.tile:visible .tile__title').filter({ hasText: 'ローダー 6 種' })).toHaveCount(1);
 
   await page.getByRole('button', { name: /すべて/ }).click();
   await expect(page.locator('.tile:visible')).toHaveCount(assetIds.length);
@@ -40,8 +40,8 @@ test('一覧にすべての素材が並び、分類で絞り込める', async ({
 test('一覧の枠をクリックすると個別ページへ移動する', async ({ page }) => {
   await page.goto('/');
   await page.locator('.tile__frame').first().click();
-  await expect(page).toHaveURL(/demo\.html\?id=text-particles/);
-  await expect(page.getByRole('heading', { level: 1 })).toHaveText('文字になる粒', { timeout: 60_000 });
+  await expect(page).toHaveURL(/demo\.html\?id=holo-chronograph/);
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('副文字盤が浮かぶホログラム時計', { timeout: 60_000 });
 });
 
 for (const id of assetIds) {

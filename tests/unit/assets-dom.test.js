@@ -12,8 +12,56 @@ import { starPolygons } from '../../src/assets/fantasy/magic-circle.js';
 // WebGL を使う素材はブラウザーが要るので、tests/e2e で確かめる。
 const domAssets = assets.filter((asset) => !asset.libs.includes('three'));
 
+// テスト用の DOM は canvas の 2D 描画を持たない（getContext が null を返す）。
+// 何を呼んでも受け流す代役を用意して、組み立てと片付けだけを確かめる。
+function fakeContext2d(canvas) {
+  const pixels = (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(Math.max(1, Math.round(w) * Math.round(h)) * 4) });
+  const gradient = () => ({ addColorStop() {} });
+  const known = {
+    canvas,
+    measureText: (text) => ({ width: String(text).length * 8, actualBoundingBoxAscent: 8, actualBoundingBoxDescent: 2 }),
+    getImageData: (x, y, w, h) => pixels(w, h),
+    createImageData: (w, h) => pixels(w, h),
+    createLinearGradient: gradient,
+    createRadialGradient: gradient,
+    createConicGradient: gradient,
+    createPattern: () => ({}),
+    getTransform: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }),
+    getLineDash: () => [],
+    isPointInPath: () => false,
+  };
+  return new Proxy(known, {
+    get: (target, key) => (key in target ? target[key] : () => {}),
+    set: (target, key, value) => {
+      target[key] = value;
+      return true;
+    },
+  });
+}
+
 let container;
 beforeEach(() => {
+  const contexts = new WeakMap();
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function getContext(type) {
+    if (type !== '2d') return null;
+    if (!contexts.has(this)) contexts.set(this, fakeContext2d(this));
+    return contexts.get(this);
+  });
+  // ブラウザーは計算済みの transform を matrix(...) で返すが、テスト用の DOM は書いたままの文字列を返す。
+  // % や em を含むと DOMMatrix が読めずに落ちるので、読めないときは変形なしとして扱う。
+  const NativeMatrix = globalThis.DOMMatrix;
+  vi.stubGlobal(
+    'DOMMatrix',
+    class TolerantMatrix extends NativeMatrix {
+      constructor(init) {
+        try {
+          super(init);
+        } catch {
+          super();
+        }
+      }
+    },
+  );
   // テスト用の DOM には document.fonts が無い。anime.js の文字分割が読むので、読み込み済みとして用意する。
   if (!document.fonts) {
     Object.defineProperty(document, 'fonts', { configurable: true, value: { status: 'loaded', ready: Promise.resolve(), addEventListener() {}, removeEventListener() {} } });
@@ -24,11 +72,12 @@ beforeEach(() => {
 afterEach(() => {
   document.body.replaceChildren();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe('DOM で動く素材', () => {
-  it('three.js を使わない素材は 17 点ある', () => {
-    expect(domAssets).toHaveLength(17);
+  it('three.js を使わない素材は 66 点ある', () => {
+    expect(domAssets).toHaveLength(66);
   });
 
   describe.each([
