@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { animate, utils } from 'animejs';
+import { animate, stagger, utils } from 'animejs';
 import { createStage } from '../../lib/stage.js';
 import { resolveParams } from '../../lib/params.js';
 import { h, injectStyle } from '../../lib/dom.js';
@@ -10,7 +10,7 @@ export const meta = {
   category: 'science',
   libs: ['three', 'animejs'],
   description:
-    '長さの違う振り子が 1 列に並んで揺れます。隣どうしで、決まった時間に揺れる回数が 1 回ずつ違うように長さを決めてあるので、進む波、交互の列、ばらばらの並びが順に現れ、1 巡するとまた全部がそろいます。クリックすると、そろった状態から始め直します。',
+    '長さの違う振り子が 1 列に並んで揺れます。隣どうしで、決まった時間に揺れる回数が 1 回ずつ違うように長さを決めてあるので、進む波、交互の列、ばらばらの並びが順に現れ、1 巡するとまた全部がそろいます。クリックすると、触った側へ、手前の振り子から順に 1 本ずつ持ち上げられていきます。全部が同じ高さにそろって一瞬止まり、いっせいに放されて、そろった状態から波が始まり直します。',
   params: {
     count: { type: 'range', label: '振り子の数', min: 7, max: 24, step: 1, default: 15 },
     cycle: { type: 'range', label: 'そろうまでの秒数', min: 15, max: 90, step: 1, default: 36 },
@@ -57,6 +57,10 @@ export function mount(container, options = {}) {
   const depth = (count - 1) * SPACING;
   const amplitude = THREE.MathUtils.degToRad(p.amplitude);
   const state = { amp: stage.reduced ? 1 : 0 };
+  // 持ち上げ具合（振り子ごと）と、放す向き。side が -1 なら左へ持ち上げる。
+  const lifts = Array.from({ length: count }, () => ({ v: 0 }));
+  let side = 1;
+  let releaseTimer = 0;
   let clock = p.cycle * 0.07;
 
   stage.scene.add(new THREE.HemisphereLight(0xfff4e0, new THREE.Color(p.background), 1.3));
@@ -145,7 +149,9 @@ export function mount(container, options = {}) {
     const waveArray = waveGeometry.attributes.position.array;
     for (let i = 0; i < count; i += 1) {
       // 振れ幅が小さいときの近似（単振動）で角度を求める。
-      const theta = amplitude * state.amp * Math.cos((2 * Math.PI * (base + i) * clock) / p.cycle);
+      const swing = side * amplitude * state.amp * Math.cos((2 * Math.PI * (base + i) * clock) / p.cycle);
+      // 持ち上げているあいだは、揺れの角度から、放す高さの角度へ寄せる。
+      const theta = swing + (side * amplitude - swing) * lifts[i].v;
       const z = depth / 2 - (count - 1 - i) * SPACING - (depth - (count - 1) * SPACING);
       const x = Math.sin(theta) * lengths[i];
       const y = PIVOT_Y - Math.cos(theta) * lengths[i];
@@ -183,17 +189,33 @@ export function mount(container, options = {}) {
 
   function realign() {
     if (stage.reduced) return;
-    clock = 0;
-    animate(state, { amp: [0, 1], duration: 900, ease: 'outBack(1.4)' });
+    clearTimeout(releaseTimer);
+    utils.remove(lifts);
+    utils.remove(state);
+    state.amp = 1;
+    // 途中まで持ち上がっているときは、向きを変えずに続きから持ち上げる。
+    if (lifts.every((lift) => lift.v < 0.02) && Math.abs(stage.pointer.x) > 0.05) side = Math.sign(stage.pointer.x);
+    const STEP = Math.min(60, 900 / count);
+    animate(lifts, { v: 1, duration: 520, ease: 'outBack(1.8)', delay: stagger(STEP, { from: 'last' }) });
+    // 全部がそろったら少し止めて、いっせいに放す。時刻 0 では全部が同じ高さにいるので、つながって動き出す。
+    releaseTimer = setTimeout(() => {
+      utils.remove(lifts);
+      clock = 0;
+      for (const lift of lifts) lift.v = 0;
+    }, 520 + STEP * (count - 1) + 320);
   }
+  const auto = p.preview && !stage.reduced ? setInterval(realign, 7000) : 0;
   container.addEventListener('click', realign);
   if (!stage.reduced) animate(state, { amp: [0, 1], duration: 1400, ease: 'outQuad' });
 
   return {
     realign,
     destroy() {
+      clearInterval(auto);
+      clearTimeout(releaseTimer);
       container.removeEventListener('click', realign);
       utils.remove(state);
+      utils.remove(lifts);
       hud.remove();
       stage.destroy();
     },

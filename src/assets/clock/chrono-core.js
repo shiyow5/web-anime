@@ -9,7 +9,7 @@ export const meta = {
   category: 'clock',
   libs: ['three', 'animejs'],
   description:
-    '秒・分・時の輪、目盛り、数字の表示を、奥行きの違う 8 枚の層に分けて重ねた時計です。ポインターを乗せると層が前後に開いて構造が見え、動かすと全体が傾きます。秒が変わるたびに輪が 1 つ点灯し、分が変わると目盛りの輪が回ります。',
+    '秒・分・時の輪、目盛り、数字の表示を、奥行きの違う 8 枚の層に分けて重ねた時計です。ポインターを乗せると層が前後に開いて構造が見え、動かすと全体が傾きます。秒が変わるたびに輪が 1 つ点灯し、分が変わると目盛りの輪が回ります。タップすると時刻を合わせ直します。層が手前から順に波打って飛び出し、秒・分・時の輪がいったん空になり、針が 2 周するあいだに目盛りの輪が半回転して、輪が外側から順に今の値まで点き直します。',
   params: {
     format: {
       type: 'select',
@@ -235,7 +235,9 @@ export function mount(container, options = {}) {
   for (const layer of layers) root.add(layer.object);
   stage.scene.add(root);
 
-  const state = { explode: 0, spin: 0, pulseSecond: 0, pulseMinute: 0 };
+  const state = { explode: 0, spin: 0, pulseSecond: 0, pulseMinute: 0, sweep: 0 };
+  // タップで層を 1 枚ずつ前へ弾く量。
+  const kicks = layers.map(() => ({ v: 0 }));
   const fill = [{ v: stage.reduced ? 1 : 0 }, { v: stage.reduced ? 1 : 0 }, { v: stage.reduced ? 1 : 0 }];
   let lastSecond = -1;
   let lastMinute = -1;
@@ -265,17 +267,17 @@ export function mount(container, options = {}) {
     hours.uniforms.uProgress.value = progress.hour * fill[2].v;
 
     const smoothSecond = (now.getSeconds() + now.getMilliseconds() / 1000) / 60;
-    hand.rotation.z = -smoothSecond * TAU;
+    hand.rotation.z = -(smoothSecond + state.sweep * 2) * TAU;
     ticks.rotation.z = -state.spin - time * 0.02;
     dashes.rotation.z += dt * 0.25;
     blocks.rotation.z -= dt * 0.4;
     rim.rotation.z = time * 0.03;
 
     const gap = p.depth * (0.45 + state.explode * 1.0);
-    for (const layer of layers) {
+    for (const [index, layer] of layers.entries()) {
       const v = layer.intro.v;
       layer.object.visible = v > 0.001;
-      layer.object.position.z = layer.z * gap - (1 - v) * 7;
+      layer.object.position.z = layer.z * gap - (1 - v) * 7 + kicks[index].v * 0.55;
       layer.object.scale.setScalar(0.55 + 0.45 * v);
     }
     // 触っていないときは、ゆっくり首を振って層の重なりを見せる。
@@ -286,6 +288,28 @@ export function mount(container, options = {}) {
 
   const open = () => !stage.reduced && animate(state, { explode: 1, ease: spring({ stiffness: 70, damping: 11 }) });
   const close = () => !stage.reduced && animate(state, { explode: 0, ease: spring({ stiffness: 70, damping: 13 }) });
+  // タップ。時刻を合わせ直す。層を手前から順に弾き、輪を空にしてから、外側の輪から順に点け直す。
+  function resync() {
+    if (stage.reduced) return;
+    utils.remove(kicks);
+    animate(kicks, {
+      v: [{ to: -0.35, duration: 130, ease: 'outQuad' }, { to: 1, duration: 260, ease: 'outExpo' }, { to: 0, duration: 1300, ease: 'outElastic(1, .45)' }],
+      delay: stagger(70, { from: 'last' }),
+    });
+    utils.remove(fill);
+    animate(fill, {
+      v: [{ to: 0, duration: 380, ease: 'inQuad' }, { to: 1, duration: 1300, ease: 'inOutQuart', delay: 250 }],
+      delay: stagger(170),
+    });
+    state.sweep %= 1;
+    animate(state, {
+      sweep: [{ to: state.sweep - 0.03, duration: 150, ease: 'outQuad' }, { to: 1, duration: 2100, ease: 'inOutCubic' }],
+      spin: { to: state.spin + Math.PI, duration: 2000, ease: 'inOutQuart' },
+      pulseMinute: [{ to: 1, duration: 120 }, { to: 0, duration: 1600, ease: 'outExpo' }],
+      onComplete: () => (state.sweep = 0),
+    });
+  }
+  container.addEventListener('pointerdown', resync);
   container.addEventListener('pointerenter', open);
   container.addEventListener('pointerleave', close);
 
@@ -299,8 +323,9 @@ export function mount(container, options = {}) {
     if (p.preview) {
       pulseTimer = setInterval(() => {
         open();
-        pulseOff = setTimeout(close, 1900);
-      }, 4800);
+        resync();
+        pulseOff = setTimeout(close, 2300);
+      }, 5200);
     }
   }
 
@@ -308,9 +333,10 @@ export function mount(container, options = {}) {
     destroy() {
       clearInterval(pulseTimer);
       clearTimeout(pulseOff);
+      container.removeEventListener('pointerdown', resync);
       container.removeEventListener('pointerenter', open);
       container.removeEventListener('pointerleave', close);
-      utils.remove([state, ...intros, ...fill]);
+      utils.remove([state, ...intros, ...fill, ...kicks]);
       texture.dispose();
       stage.destroy();
     },

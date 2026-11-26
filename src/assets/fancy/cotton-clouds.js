@@ -8,7 +8,7 @@ export const meta = {
   category: 'fancy',
   libs: ['animejs'],
   description:
-    'ふわふわの雲が、奥・中・手前の 3 つの層で速さを変えて流れ、そのあいだに虹が 1 色ずつ線で描かれて架かります。クリックすると雲がぽんとふくらみ、虹を描き直します。空の色は朝・昼・夕方・ミントから選べます。天気の案内、子ども向けのページ、やさしい見出しの背景に使えます。',
+    'ふわふわの雲が、奥・中・手前の 3 つの層で速さを変えて流れ、そのあいだに虹が 1 色ずつ線で描かれて架かります。クリックすると、いちばん近い雲がぎゅっとしぼられてからふくらみ、色とりどりの雨つぶを降らせます。まわりの雲は近い順に揺れ、雨が上がると虹が 1 色ずつ架かり直します。空の色は朝・昼・夕方・ミントから選べます。天気の案内、子ども向けのページ、やさしい見出しの背景に使えます。',
   params: {
     sky: {
       type: 'select',
@@ -43,6 +43,7 @@ const CSS = `
 .ua-cc__band{fill:none;stroke-width:15;stroke-linecap:round}
 .ua-cc__glow{fill:none;stroke:#fff;stroke-width:108;opacity:.16}
 .ua-cc__star{fill:#fff}
+.ua-cc__drop{opacity:0;pointer-events:none}
 `;
 
 const W = 800;
@@ -135,6 +136,8 @@ export function mount(container, options = {}) {
     anchors.map((a) => a.outer),
     layerGroups[2],
   );
+  const rainLayer = s('g', {});
+  svg.insertBefore(rainLayer, layerGroups[2]);
   root.appendChild(svg);
 
   if (reduced) return { destroy: () => removeRoot(root) };
@@ -148,15 +151,90 @@ export function mount(container, options = {}) {
     animate(glow, { opacity: [0, 0.16], duration: 1800, delay: 500, ease: 'outQuad' });
   }
 
-  function puff() {
-    animate(inners, {
-      scale: [
-        { to: 1.14, duration: 160, ease: 'outQuad' },
-        { to: 1, ease: spring({ stiffness: 180, damping: 7 }) },
+  const DROP = 'M0,-9 C4,-2 5,2 5,5 A5,5 0 0 1 -5,5 C-5,2 -4,-2 0,-9Z';
+  let rainbowTimer = 0;
+  disposer.add(() => clearTimeout(rainbowTimer));
+
+  // 雲をしぼる。準備で縮み、ふくらんで雨を落とし、雨が上がってから虹を描き直す。
+  function puff(event) {
+    let px = NaN;
+    let py = NaN;
+    const matrix = event?.clientX === undefined ? null : svg.getScreenCTM?.();
+    if (matrix) {
+      const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix.inverse());
+      px = point.x;
+      py = point.y;
+    }
+    const onScreen = clouds.filter((c) => c.x > 80 && c.x < W - 80 && c.y < 440);
+    const pool = onScreen.length ? onScreen : clouds;
+    let main = pool[Math.floor(Math.random() * pool.length)];
+    if (Number.isFinite(px)) {
+      main = clouds.reduce((best, c) => (Math.hypot(c.x - px, c.y - py) < Math.hypot(best.x - px, best.y - py) ? c : best), clouds[0]);
+    } else {
+      px = main.x;
+      py = main.y;
+    }
+
+    utils.remove(inners);
+    utils.set(main.inner, { scale: 1 });
+    animate(main.inner, {
+      scaleX: [
+        { to: 1.18, duration: 170, ease: 'outQuad' },
+        { to: 0.92, duration: 150, ease: 'outQuad' },
+        { to: 1, ease: spring({ stiffness: 170, damping: 6 }) },
       ],
-      delay: stagger(35, { from: 'random' }),
+      scaleY: [
+        { to: 0.66, duration: 170, ease: 'outQuad' },
+        { to: 1.24, duration: 150, ease: 'outQuad' },
+        { to: 1, ease: spring({ stiffness: 200, damping: 7 }) },
+      ],
     });
-    drawRainbow();
+    // ほかの雲は、近いものから順に小さく揺れる。
+    for (const c of [...clouds, ...anchors]) {
+      if (c === main) continue;
+      const d = c.x === undefined ? 520 : Math.hypot(c.x - px, c.y - py);
+      animate(c.inner, {
+        scale: [
+          { to: 1 + 0.16 * Math.max(0.25, 1 - d / 700), duration: 180, ease: 'outQuad' },
+          { to: 1, ease: spring({ stiffness: 160, damping: 7 }) },
+        ],
+        delay: 240 + d * 0.9,
+      });
+    }
+
+    if (rainLayer.childElementCount < 4) {
+      const width = main.span * 1.25;
+      const fall = Math.max(120, H - main.y - 10);
+      const drops = Array.from({ length: p.preview ? 10 : 16 }, (_, i) =>
+        s('path', { class: 'ua-cc__drop', d: DROP, fill: BANDS[i % BANDS.length] }),
+      );
+      const size = Math.min(1.4, main.span / 70);
+      // 位置と大きさは外側の g の属性に持たせ、内側の雨つぶだけを動かす。
+      const holders = drops.map((drop, i) => s('g', { transform: `translate(${((((i * 0.618) % 1) - 0.5) * width).toFixed(1)} 0) scale(${((0.7 + (i % 3) * 0.25) * size).toFixed(2)})` }, drop));
+      const group = s('g', { transform: `translate(${main.x.toFixed(1)} ${(main.y + main.span * 0.3).toFixed(1)})` }, holders);
+      rainLayer.appendChild(group);
+      animate(drops, {
+        translateY: { from: 0, to: () => (fall * utils.random(0.75, 1)) / size, ease: 'inQuad' },
+        opacity: [
+          { from: 0, to: 1, duration: 120 },
+          { to: 1, duration: 520 },
+          { to: 0, duration: 260 },
+        ],
+        duration: 900,
+        delay: stagger(55, { start: 330, from: 'random' }),
+        onComplete: () => group.remove(),
+      });
+    }
+
+    if (arcs.length) {
+      animate(rainbow, { opacity: 0, duration: 300, ease: 'outQuad' });
+      clearTimeout(rainbowTimer);
+      rainbowTimer = setTimeout(() => {
+        utils.remove(rainbow);
+        rainbow.style.opacity = '';
+        drawRainbow();
+      }, 1250);
+    }
   }
 
   animate(inners, { scale: [0, 1], delay: stagger(70, { start: 100 }), ease: spring({ stiffness: 120, damping: 9 }) });
@@ -215,7 +293,7 @@ export function mount(container, options = {}) {
     target.y = 0;
   });
   disposer.listen(root, 'click', puff);
-  if (p.preview) disposer.interval(puff, 5200);
+  if (p.preview) disposer.interval(() => puff(), 5200);
 
   return {
     puff,

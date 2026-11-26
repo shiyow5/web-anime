@@ -11,7 +11,7 @@ export const meta = {
   category: 'clock',
   libs: ['three', 'animejs'],
   description:
-    '低い視点から見上げる大きな文字盤の上に、大小 6 つの副文字盤が高さを変えて浮かびます。副文字盤はそれぞれ自分の軸で傾いて揺れ、外周では回路のような縁取りが逆向きに回り、軸の違う大きな輪が文字盤を横切ります。紫の針がいまの時刻を指し、ときどき映像が乱れます。クリックすると層が大きく開いて戻ります。',
+    '低い視点から見上げる大きな文字盤の上に、大小 6 つの副文字盤が高さを変えて浮かびます。副文字盤はそれぞれ自分の軸で傾いて揺れ、外周では回路のような縁取りが逆向きに回り、軸の違う大きな輪が文字盤を横切ります。紫の針がいまの時刻を指し、ときどき映像が乱れます。クリックすると時刻合わせが始まり、針が 24 時間ぶんを一気に早回しして、いまの時刻へ減速して戻ります。その間、副文字盤は順に裏返り、外周の回路も勢いよく回ります。',
   params: {
     line: { type: 'color', label: '線の色', default: '#e8f9ff' },
     accent: { type: 'color', label: '目盛りの色', default: '#2fe6ff' },
@@ -159,7 +159,7 @@ export function mount(container, options = {}) {
       hand.add(mesh(ringBand(0, r * 0.06), mat.line, 0.014));
     }
     dial.add(group);
-    return { def, group, spinner, hand, lift: still ? 1 : 0, phase: index * 1.7 };
+    return { def, group, spinner, hand, lift: still ? 1 : 0, flip: 0, phase: index * 1.7 };
   });
 
   // 飾り。波形、六角形の印、小さな文字。
@@ -235,10 +235,13 @@ export function mount(container, options = {}) {
     ring.add(rider);
     axis.add(ring);
     rig.add(axis);
-    return { ...def, axis, ring, rider, phase: index * 2.1, open: still ? 1 : 0 };
+    return { ...def, axis, ring, rider, phase: index * 2.1, open: still ? 1 : 0, swing: 0 };
   });
 
   const state = { open: still ? 1 : 0, spread: 1 };
+  // 時刻合わせ。wind は早回しした量（1 で 24 時間）、rush は勢い（0〜1）。
+  const spin = { wind: 0, rush: 0 };
+  const rimAngles = [0, 0, 0];
   stage.onResize(() => {
     const view = stage.viewport();
     rig.scale.setScalar(Math.min(1.4, view.width / 5.5, view.height / 3.7));
@@ -249,9 +252,12 @@ export function mount(container, options = {}) {
     const t = still ? 0 : time;
     const now = new Date();
     const f = clockFractions(now);
-    if (now.getMinutes() !== shownMinute) {
-      shownMinute = now.getMinutes();
-      clock.draw(`${pad(now.getHours())}:${pad(shownMinute)}`);
+    // 早回しの間は、数字も針と同じだけ進める。
+    const shown = spin.wind === 0 ? now : new Date(now.getTime() + spin.wind * 86_400_000);
+    const minuteKey = shown.getHours() * 60 + shown.getMinutes();
+    if (minuteKey !== shownMinute) {
+      shownMinute = minuteKey;
+      clock.draw(`${pad(shown.getHours())}:${pad(shown.getMinutes())}`);
     }
     noise.update(time, dt);
 
@@ -262,40 +268,47 @@ export function mount(container, options = {}) {
     dial.scale.setScalar(0.7 + 0.3 * state.open);
     dial.rotation.z = (1 - state.open) * -1.2;
 
-    rimA.rotation.z = t * 0.07;
-    rimB.rotation.z = -t * 0.12;
-    rimC.rotation.z = t * 0.03;
+    // 外周の回路。早回しの間は、勢いに合わせて速く回る。
+    const rimStep = still ? 0 : dt * (1 + spin.rush * 22);
+    rimAngles[0] += rimStep * 0.07;
+    rimAngles[1] -= rimStep * 0.12;
+    rimAngles[2] += rimStep * 0.03;
+    rimA.rotation.z = rimAngles[0];
+    rimB.rotation.z = rimAngles[1];
+    rimC.rotation.z = rimAngles[2];
 
     for (const sub of subs) {
       const { def } = sub;
       sub.group.position.z = def.z * sub.lift * state.spread;
       sub.group.scale.setScalar(0.4 + 0.6 * Math.min(1, sub.lift));
       // 支点を中心に、2 本の軸で別々の周期で揺らす。
-      sub.group.rotation.x = Math.sin(t * 0.6 + sub.phase) * def.tilt * sub.lift;
+      // flip は、時刻合わせのときに副文字盤が 1 回裏返るぶん。
+      sub.group.rotation.x = Math.sin(t * 0.6 + sub.phase) * def.tilt * sub.lift + sub.flip * TAU;
       sub.group.rotation.y = Math.cos(t * 0.47 + sub.phase * 1.3) * def.tilt * sub.lift;
       sub.spinner.rotation.z = t * (0.25 + (sub.phase % 1) * 0.4) * (sub.phase % 2 > 1 ? -1 : 1);
     }
-    subs[1].hand.rotation.z = dialAngle(f.second);
+    subs[1].hand.rotation.z = dialAngle(f.second + spin.wind * 48);
     subs[2].hand.rotation.z = -t * 2.4;
-    subs[3].hand.rotation.z = dialAngle(f.day);
+    subs[3].hand.rotation.z = dialAngle(f.day + spin.wind);
     subs[4].hand.rotation.z = Math.PI * 0.75 + Math.sin(t * 0.8) * 0.9 + Math.sin(t * 5.1) * 0.05;
     subs[5].hand.rotation.z = t * 0.5;
 
     // 針は中央の副文字盤のすぐ上に置き、一緒に上下させる。
     hands.position.z = subs[0].group.position.z + 0.05;
     hands.scale.setScalar(0.4 + 0.6 * Math.min(1, subs[0].lift));
-    minuteHand.pivot.rotation.z = dialAngle(f.minute);
-    hourHand.pivot.rotation.z = dialAngle(f.hour);
+    // 分針が 24 周するあいだに、時針は 2 周する。歯車の比は実物の時計と同じ。
+    minuteHand.pivot.rotation.z = dialAngle(f.minute + spin.wind * 24);
+    hourHand.pivot.rotation.z = dialAngle(f.hour + spin.wind * 2);
 
     bars.forEach((bar, i) => {
       const wave = Math.sin(i * 0.55 + t * 3.1) * Math.sin(i * 0.17 + t * 1.3);
-      bar.scale.y = 0.03 + Math.abs(wave) * 0.34 * (0.4 + 0.6 * Math.sin((i / (BARS - 1)) * Math.PI));
+      bar.scale.y = (0.03 + Math.abs(wave) * 0.34 * (0.4 + 0.6 * Math.sin((i / (BARS - 1)) * Math.PI))) * (1 + spin.rush * 1.4);
     });
     badge.rotation.z = Math.sin(t * 0.7) * 0.25;
     badge.position.z = 0.12 * state.spread + Math.sin(t * 0.9) * 0.02;
 
     for (const orbit of orbits) {
-      orbit.axis.rotation.x = orbit.tilt[0] + Math.sin(t * 0.17 + orbit.phase) * 0.12;
+      orbit.axis.rotation.x = orbit.tilt[0] + Math.sin(t * 0.17 + orbit.phase) * 0.12 + orbit.swing * TAU;
       orbit.ring.rotation.z = t * orbit.speed + orbit.phase;
       orbit.ring.scale.setScalar(0.3 + 0.7 * orbit.open);
       orbit.rider.rotation.z = -t * 1.3;
@@ -304,10 +317,37 @@ export function mount(container, options = {}) {
   });
 
   const bounce = spring({ stiffness: 110, damping: 9 });
+  // 時刻合わせ。針を 24 時間ぶん早回しして、いまの時刻へ戻す。タップのたびに、進む向きと戻る向きを入れ替える。
+  let winding = false;
+  let direction = 1;
   function pulse() {
-    if (still) return;
-    noise.burst(1.1);
-    animate(state, { spread: [{ to: 2.1, duration: 320, ease: 'outExpo' }, { to: 1, ease: bounce }] });
+    if (still || winding) return;
+    winding = true;
+    noise.burst(0.7);
+    animate(spin, {
+      wind: [0, direction],
+      duration: 3400,
+      ease: 'inOutCubic',
+      onComplete() {
+        // 24 時間ちょうどなので、0 に戻しても針の位置は変わらない。
+        spin.wind = 0;
+        winding = false;
+        noise.burst(0.9);
+      },
+    });
+    animate(spin, {
+      rush: [
+        { to: 1, duration: 1100, ease: 'inQuad' },
+        { to: 1, duration: 900 },
+        { to: 0, duration: 1400, ease: 'outCubic' },
+      ],
+    });
+    // 副文字盤は、中央に近いものから順に 1 回裏返る。中央は針を載せているので裏返さない。
+    animate(subs.slice(1), { flip: [0, direction], duration: 1500, ease: 'inOutBack(1.4)', delay: stagger(170, { start: 250 }), onComplete: () => subs.forEach((sub) => (sub.flip = 0)) });
+    // 大きな輪は、軸ごと 1 回転して元の向きへ収まる。
+    animate(orbits, { swing: [0, direction], duration: 2600, ease: 'inOutQuart', delay: stagger(300), onComplete: () => orbits.forEach((orbit) => (orbit.swing = 0)) });
+    animate(state, { spread: [{ to: 1.35, duration: 900, ease: 'outCubic' }, { to: 1.35, duration: 1100 }, { to: 1, ease: bounce }] });
+    direction = -direction;
   }
   container.addEventListener('pointerdown', pulse);
 
@@ -318,7 +358,7 @@ export function mount(container, options = {}) {
     animate(state, { open: 1, duration: 1800, ease: 'outExpo' });
     animate(subs, { lift: 1, ease: bounce, delay: stagger(130, { start: 350 }) });
     animate(orbits, { open: 1, duration: 1600, ease: 'outBack(1.6)', delay: stagger(260, { start: 900 }) });
-    if (p.preview) previewTimer = setInterval(pulse, 5200);
+    if (p.preview) previewTimer = setInterval(pulse, 7000);
   }
 
   return {
@@ -326,7 +366,7 @@ export function mount(container, options = {}) {
     destroy() {
       clearInterval(previewTimer);
       container.removeEventListener('pointerdown', pulse);
-      utils.remove([state, ...subs, ...orbits]);
+      utils.remove([state, spin, ...subs, ...orbits]);
       stage.destroy();
     },
   };

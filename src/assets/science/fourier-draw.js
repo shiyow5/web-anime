@@ -8,7 +8,7 @@ export const meta = {
   category: 'science',
   libs: ['animejs'],
   description:
-    '大きさと速さの違う円が数珠つなぎになって回り、先端が図形を描いていきます。円の半径と回る速さは、目標の図形を離散フーリエ変換して求めたものです。円の数を増やすほど角が鋭くなり、目標との誤差が小さくなります。クリックすると図形が切り替わります。',
+    '大きさと速さの違う円が数珠つなぎになって回り、先端が図形を描いていきます。円の半径と回る速さは、目標の図形を離散フーリエ変換して求めたものです。円の数を増やすほど角が鋭くなり、目標との誤差が小さくなります。クリックすると、描きかけの線が一瞬太く光り、輪郭が描き始めの側から波のように次の図形へ変形していきます。変形のあいだは円の半径と速さが毎フレーム計算し直され、円の列が早回しで振り回されてから、元の速さに落ち着いて描き続けます。',
   params: {
     shape: {
       type: 'select',
@@ -116,7 +116,9 @@ export function mount(container, options = {}) {
   );
   const ctx = canvas.getContext('2d');
   const view = { width: 1, height: 1, dpr: 1 };
-  const state = { reveal: reduced ? 1 : 0, flash: 0 };
+  const state = { reveal: reduced ? 1 : 0, flash: 0, morph: 0, rush: 0 };
+  // 図形を切り替えている最中の、変形前と変形後の輪郭。
+  let morphing = null;
 
   let shape = p.shape;
   let target = [];
@@ -292,17 +294,53 @@ export function mount(container, options = {}) {
       draw();
       return;
     }
-    trail = [];
-    phase = 0;
-    animate(state, { reveal: [0, 1], duration: 900, ease: 'outQuad' });
-    animate(state, { flash: [1, 0], duration: 600, ease: 'outQuad' });
+  }
+
+  // いまの輪郭から次の輪郭へ、描き始めの側から順に変形させる。円の列はそのつど計算し直す。
+  function morphFrame() {
+    const { from, to } = morphing;
+    target = to.map(([x, y], j) => {
+      const m = Math.min(1, Math.max(0, state.morph * 1.5 - (j / SAMPLES) * 0.5));
+      const e = m * m * (3 - 2 * m);
+      return [from[j][0] + (x - from[j][0]) * e, from[j][1] + (y - from[j][1]) * e];
+    });
+    terms = fourierCoefficients(target).slice(0, count);
+    const points = 320;
+    trail = Array.from({ length: points + 1 }, (_, i) => tip(phase - 0.97 + (0.97 * i) / points));
+  }
+  function switchShape() {
+    if (reduced) {
+      nextShape();
+      return;
+    }
+    const from = target;
+    const keepPhase = phase;
+    shape = SHAPE_ORDER[(SHAPE_ORDER.indexOf(shape) + 1) % SHAPE_ORDER.length];
+    prepare();
+    phase = keepPhase;
+    morphing = { from, to: target };
+    utils.remove(state);
+    state.morph = 0;
+    state.reveal = 1;
+    animate(state, {
+      flash: [{ to: 1.4, duration: 140, ease: 'outQuad' }, { to: 0, duration: 1300, ease: 'outQuad' }],
+      morph: { to: 1, duration: 1250, ease: 'inOutCubic', delay: 140 },
+      rush: [{ to: -0.8, duration: 140, ease: 'outQuad' }, { to: 6, duration: 420, ease: 'outQuad' }, { to: 0, duration: 1500, ease: 'outCubic' }],
+      onComplete() {
+        if (!morphing) return;
+        state.morph = 1;
+        morphFrame();
+        morphing = null;
+      },
+    });
   }
 
   prepare();
   const observer = new ResizeObserver(resize);
   observer.observe(root);
   disposer.add(() => observer.disconnect());
-  disposer.listen(root, 'click', nextShape);
+  disposer.listen(root, 'click', switchShape);
+  if (p.preview && !reduced) disposer.interval(switchShape, 6000);
   resize();
 
   if (!reduced) {
@@ -315,10 +353,11 @@ export function mount(container, options = {}) {
         const dt = Math.min(Math.max(now - last, 0), 50) / 1000;
         last = now;
         const before = phase;
-        phase += dt / p.period;
+        phase += (dt / p.period) * (1 + state.rush);
         // 速い円が角ばらないように、1 フレームを細かく刻んで点を足す。
         const sub = 4;
-        for (let i = 1; i <= sub; i += 1) trail.push(tip(before + ((phase - before) * i) / sub));
+        if (morphing) morphFrame();
+        else for (let i = 1; i <= sub; i += 1) trail.push(tip(before + ((phase - before) * i) / sub));
         // 1 周ぶんより古い線は消す。
         const keep = Math.min(maxTrail * sub, Math.ceil((p.period * 0.97 * sub) / Math.max(dt, 1 / 240)));
         if (trail.length > keep) trail.splice(0, trail.length - keep);
@@ -330,7 +369,7 @@ export function mount(container, options = {}) {
   }
 
   return {
-    nextShape,
+    nextShape: switchShape,
     destroy() {
       disposer.run();
       utils.remove(state);

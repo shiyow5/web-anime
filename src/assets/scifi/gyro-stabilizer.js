@@ -10,7 +10,7 @@ export const meta = {
   category: 'scifi',
   libs: ['three', 'animejs'],
   description:
-    '外・中・内の 3 重の輪が、たがいに直交する軸で支え合い、その中でこまが高速で回ります。ポインターを動かすと八角形の外枠だけが傾き、輪が逆向きに回って、こまは元の向きを保ちます。クリックで衝撃を与えると、輪が大きく振れてから揺れ戻ります。姿勢の制御や安定を伝える場面に使えます。',
+    '外・中・内の 3 重の輪が、たがいに直交する軸で支え合い、その中でこまが高速で回ります。ポインターを動かすと八角形の外枠だけが傾き、輪が逆向きに回って、こまは元の向きを保ちます。クリックで衝撃を与えると、触った側から押されたように外の輪から順に大きく振れ、こまは首を大きく振って倒れかけます。そこからこまが立ち直るにつれて、輪も内側から順に揺れ戻って静まります。姿勢の制御や安定を伝える場面に使えます。',
   params: {
     frame: { type: 'color', label: '外枠の色', default: '#6fa8ff' },
     ring: { type: 'color', label: '輪の色', default: '#58f0d2' },
@@ -171,7 +171,7 @@ export function mount(container, options = {}) {
   system.add(shock);
 
   const enter = [0, 1, 2, 3, 4].map(() => ({ e: stage.reduced ? 1 : 0 }));
-  const kick = { a: 0, b: 0, c: 0, flash: 0, wave: 1 };
+  const kick = { a: 0, b: 0, c: 0, flash: 0, wave: 1, lean: 0, hurry: 0 };
   const baseBloom = stage.bloomPass?.strength ?? 0;
   let idle = 1;
   let wander = 0;
@@ -190,7 +190,7 @@ export function mount(container, options = {}) {
     // ポインターが枠の外にあるときは、外枠を自動でゆっくり揺らす。
     idle += ((stage.pointer.inside ? 0.15 : 1) - idle) * (1 - Math.exp(-dt * 3));
     wander += dt;
-    precess += dt * p.precession;
+    precess += dt * p.precession * (1 + kick.hurry * 5);
     frameEuler.set(
       -stage.pointer.sy * 0.75 + Math.sin(wander * 0.53) * 0.42 * idle,
       Math.sin(wander * 0.31) * 0.5 * idle,
@@ -200,7 +200,7 @@ export function mount(container, options = {}) {
     frame.quaternion.copy(frameQuat);
 
     // こまは外枠に関係なく、首を振りながら自分の向きを保つ。
-    rotorQuat.setFromAxisAngle(axisY, precess).multiply(leanQuat.setFromAxisAngle(axisZ, p.lean));
+    rotorQuat.setFromAxisAngle(axisY, precess).multiply(leanQuat.setFromAxisAngle(axisZ, p.lean + kick.lean));
     const angles = gimbalAngles(frameQuat, rotorQuat);
     const [e0, e1, e2, e3, e4] = enter.map((state) => state.e);
     outer.rotation.y = angles.outer + kick.a + (1 - e1) * 2.4;
@@ -224,9 +224,17 @@ export function mount(container, options = {}) {
   function impact(strength = 1) {
     if (stage.reduced) return;
     const s = Math.min(2, Math.max(0.1, Number(strength) || 1));
-    const push = () => (Math.random() < 0.5 ? -1 : 1) * (0.45 + Math.random() * 0.4) * s;
+    // 触った側から押されたことにして、振れる向きを決める。枠の外から呼ばれたときは乱数で決める。
+    const side = (value) => (Math.abs(value) > 0.08 ? Math.sign(value) : Math.random() < 0.5 ? -1 : 1);
+    const push = (value) => side(value) * (0.45 + Math.random() * 0.4) * s;
+    const { x, y } = stage.pointer;
     utils.remove(kick);
-    animate(kick, { a: [push(), 0], b: [push() * 0.8, 0], c: [push(), 0], duration: 2400, ease: 'outElastic(1, .26)' });
+    // 外の輪から順に振れ、内の輪ほど遅れて長く揺れる。
+    animate(kick, { a: [{ to: push(x), duration: 110, ease: 'outQuad' }, { to: 0, duration: 2000, ease: 'outElastic(1, .26)' }] });
+    animate(kick, { b: [{ to: push(-y) * 0.8, duration: 110, ease: 'outQuad', delay: 90 }, { to: 0, duration: 2300, ease: 'outElastic(1, .24)' }] });
+    animate(kick, { c: [{ to: push(x), duration: 110, ease: 'outQuad', delay: 180 }, { to: 0, duration: 2600, ease: 'outElastic(1, .22)' }] });
+    // こまは倒れかけて首振りが速くなり、ゆっくり立ち直る。
+    animate(kick, { lean: [{ to: 0.5 * s, duration: 160, ease: 'outQuad' }, { to: 0, duration: 2600, ease: 'inOutSine' }], hurry: [{ to: 1, duration: 160 }, { to: 0, duration: 2600, ease: 'outQuad' }] });
     animate(kick, { flash: [1, 0], duration: 900, ease: 'outQuad' });
     animate(kick, { wave: [0, 1], duration: 900, ease: 'outExpo' });
   }

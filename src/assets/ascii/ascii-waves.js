@@ -8,7 +8,7 @@ export const meta = {
   category: 'ascii',
   libs: ['animejs'],
   description:
-    'いくつもの波源から広がる輪が重なり、強め合う所と打ち消し合う所ができる水面を、文字の濃淡で描きます。ポインターの位置も波源になり、クリックすると大きな輪が 1 つ広がります。落ち着いた背景や、音・通信を扱うページの飾りに使えます。',
+    'いくつもの波源から広がる輪が重なり、強め合う所と打ち消し合う所ができる水面を、文字の濃淡で描きます。ポインターの位置も波源になり、クリックすると、押した場所から石が水を切って跳ねていきます。最初の大きな輪に続いて、少しずつ小さくなる輪が、進む先に時間差で 3 つ立ち、重なった輪が干渉の模様を作ります。落ち着いた背景や、音・通信を扱うページの飾りに使えます。',
   params: {
     color: { type: 'color', label: '水面の色', default: '#58b6c8' },
     accent: { type: 'color', label: '波頭の色', default: '#f0fbff' },
@@ -26,7 +26,7 @@ const LAST = RAMP_CODES.length - 1;
 const BASE = 12;
 const MONO = 'ui-monospace,"SF Mono",Menlo,Consolas,monospace';
 const SPACE = 32;
-const MAX_RINGS = 4;
+const MAX_RINGS = 8;
 
 const CSS = `
 .ua-awv{position:absolute;inset:0;overflow:hidden;background:var(--ua-bg);cursor:crosshair}
@@ -115,11 +115,28 @@ export function mount(container, options = {}) {
   });
   disposer.listen(root, 'pointerdown', (event) => {
     const local = localPointer(event, root);
-    const ring = { x: local.x, y: local.y, age: 0, power: 0 };
+    skip(local.x, local.y);
+  });
+
+  function addRing(x, y, power) {
+    const ring = { x, y, age: 0, power: 0 };
     rings.push(ring);
     if (rings.length > MAX_RINGS) utils.remove(rings.shift());
-    animate(ring, { power: [1.6, 0], duration: 3200, ease: 'outQuad', onComplete: () => rings.splice(rings.indexOf(ring), 1) });
-  });
+    animate(ring, { power: [power, 0], duration: 3200, ease: 'outQuad', onComplete: () => rings.splice(rings.indexOf(ring), 1) });
+  }
+
+  // 水切り。押した場所から、画面の広い側へ向かって石が跳ねる。跳ねるたびに間隔が詰まり、輪は小さくなる。
+  function skip(x, y) {
+    if (reduced) return;
+    const dir = x < 0.5 ? 1 : -1;
+    const lift = y < 0.5 ? 0.035 : -0.035;
+    let reach = 0;
+    for (let i = 0; i < 4; i += 1) {
+      const at = reach;
+      disposer.timeout(() => addRing(x + dir * at, y + lift * i, 1.7 * 0.68 ** i), i * 230);
+      reach += 0.16 * 0.8 ** i;
+    }
+  }
 
   function draw(dt) {
     const { cols, rows, aspect } = g;

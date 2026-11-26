@@ -8,7 +8,7 @@ export const meta = {
   category: 'scifi',
   libs: ['animejs'],
   description:
-    '見出しが、電波の乱れた映像のように一瞬ずれて、色が分かれます。乱れは決まった間隔で起き、ポインターを乗せたときにも起きます。ゲームや音楽、SF 系のサイトの見出しに合います。',
+    '見出しが、電波の乱れた映像のように一瞬ずれて、色が分かれます。乱れは決まった間隔で起き、ポインターを乗せたときにも起きます。クリックすると信号が途切れ、全部の文字が記号に化けて激しく乱れたあと、触った文字から外へ向かって 1 文字ずつ読み取り直されます。ゲームや音楽、SF 系のサイトの見出しに合います。',
   params: {
     text: { type: 'text', label: '文字', default: 'SYSTEM ERROR', maxLength: 40 },
     intensity: { type: 'range', label: 'ずれの大きさ', min: 0.2, max: 3, step: 0.1, default: 1 },
@@ -72,14 +72,50 @@ export function mount(container, options = {}) {
     timeline.call(settle, STEPS * STEP_MS);
   }
 
+  // クリック。全部の文字を記号に化けさせて強く乱し、触った文字から外へ順に元の文字へ戻す。
+  const GLYPHS = '#%&/<>[]{}=+*?01';
+  const layersAll = [base, ghostA, ghostB];
+  const chars = [...p.text];
+  let decoding = null;
+  const writeText = (solved) => {
+    const text = chars.map((char, i) => (solved(i) || char === ' ' ? char : GLYPHS[Math.floor(Math.random() * GLYPHS.length)])).join('');
+    for (const layer of layersAll) layer.textContent = text;
+  };
+  function scramble(event) {
+    const rect = base.getBoundingClientRect();
+    const ratio = event && rect.width ? Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)) : 0.5;
+    const origin = ratio * (chars.length - 1);
+    const reach = Math.max(origin, chars.length - 1 - origin) + 1;
+    decoding?.pause();
+    timeline?.pause();
+    const HOLD = 6;
+    const total = HOLD + Math.ceil(reach) + 1;
+    decoding = createTimeline();
+    for (let step = 0; step <= total; step += 1) {
+      decoding.call(() => {
+        writeText((i) => Math.abs(i - origin) < step - HOLD);
+        // はじめは全体を強く乱し、読み取りが進むにつれて弱める。
+        if (step < total - 1 && (step < HOLD || step % 2 === 0)) jolt();
+        else settle();
+      }, step * 55);
+    }
+    decoding.call(() => {
+      for (const layer of layersAll) layer.textContent = p.text;
+      settle();
+    }, (total + 1) * 55);
+  }
+  disposer.add(() => decoding?.pause());
+
   disposer.listen(root, 'pointerenter', burst);
-  disposer.listen(root, 'click', burst);
+  disposer.listen(root, 'click', scramble);
+  if (options.preview) disposer.interval(() => scramble(), 5200);
   disposer.interval(burst, p.interval * 1000);
   disposer.timeout(burst, 400);
   disposer.add(() => timeline?.pause());
 
   return {
     burst,
+    scramble: () => scramble(),
     destroy() {
       disposer.run();
       removeRoot(root);

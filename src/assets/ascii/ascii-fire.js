@@ -8,7 +8,7 @@ export const meta = {
   category: 'ascii',
   libs: ['animejs'],
   description:
-    '下から上へ燃え上がる炎を、熱いところほど濃い文字にして描きます。芯の熱い部分は別の色で重なり、火の粉が上へ舞います。ポインターを近づけると、そのあたりの炎が強く高くなります。見出しの背景や、勢いを出したい場面に使えます。',
+    '下から上へ燃え上がる炎を、熱いところほど濃い文字にして描きます。芯の熱い部分は別の色で重なり、火の粉が上へ舞います。ポインターを近づけると、そのあたりの炎が強く高くなります。タップするとふいごで吹いたように、その場所の炎がいったん沈んでから火柱になって噴き上がり、火の玉が上へちぎれて火の粉が四方へ散り、しばらく周りが明るく燃え続けます。見出しの背景や、勢いを出したい場面に使えます。',
   params: {
     color: { type: 'color', label: '炎の色', default: '#ff5a1c' },
     accent: { type: 'color', label: '芯の色', default: '#ffe28a' },
@@ -118,6 +118,41 @@ export function mount(container, options = {}) {
   const sparkCount = Math.round(preview ? p.sparks * 0.5 : p.sparks);
   const sparks = Array.from({ length: sparkCount }, () => ({ x: 0, y: -1, vx: 0, vy: 0, life: 0, age: 1 }));
   let time = reduced ? 5 : 0;
+  const blasts = [];
+  const MAX_BLASTS = 4;
+
+  // ふいごで吹く。準備で炎が沈み、山場で火柱と火の玉が上がり、余韻でまわりが明るく燃え続ける。
+  function stoke(event) {
+    if (reduced) return;
+    const x = event && g.cols ? localPointer(event, root).x : 0.2 + Math.random() * 0.6;
+    const blast = { x, dip: 0, surge: 0, ball: 0, glow: 0, fired: false };
+    blasts.push(blast);
+    if (blasts.length > MAX_BLASTS) utils.remove(blasts.shift());
+    animate(blast, {
+      dip: [
+        { to: 1, duration: 170, ease: 'outQuad' },
+        { to: 0, duration: 220, ease: 'inQuad' },
+      ],
+      surge: [
+        { to: 0, duration: 170 },
+        { to: 1, duration: 300, ease: 'outBack(2)' },
+        { to: 0, duration: 1500, ease: 'inOutQuad' },
+      ],
+      ball: [
+        { to: 0, duration: 200 },
+        { to: 1, duration: 1300, ease: 'outQuad' },
+      ],
+      glow: [
+        { to: 1, duration: 500, ease: 'outQuad' },
+        { to: 0, duration: 3200, ease: 'inOutSine' },
+      ],
+      onComplete() {
+        const at = blasts.indexOf(blast);
+        if (at >= 0) blasts.splice(at, 1);
+      },
+    });
+  }
+  disposer.listen(root, 'pointerdown', stoke);
 
   disposer.listen(root, 'pointermove', (event) => {
     const local = localPointer(event, root);
@@ -150,8 +185,30 @@ export function mount(container, options = {}) {
     // 列ごとの炎の高さ。ゆっくり変わるノイズに、ポインターの分を足す。
     const reachOf = (x) => {
       const fan = Math.exp(-(((x - px) / 0.2) ** 2)) * ptr.gain;
-      return tall * (0.5 + 0.55 * noise(x * 1.4, time * 0.45, 3.7)) + fan * (0.2 + 0.5 * py);
+      let reach = tall * (0.5 + 0.55 * noise(x * 1.4, time * 0.45, 3.7)) + fan * (0.2 + 0.5 * py);
+      for (const blast of blasts) {
+        const off = x - blast.x * wide;
+        const narrow = Math.exp(-((off / 0.15) ** 2));
+        reach += narrow * (blast.surge * 0.7 - blast.dip * 0.32) + Math.exp(-((off / 0.55) ** 2)) * blast.glow * 0.16;
+      }
+      return reach;
     };
+    // 火柱が立った瞬間に、火の粉をまとめて四方へ飛ばす。
+    for (const blast of blasts) {
+      if (blast.fired || blast.surge < 0.4) continue;
+      blast.fired = true;
+      const bx = blast.x * wide;
+      const amount = Math.min(sparks.length, 14);
+      for (let i = 0; i < amount; i += 1) {
+        const spark = sparks[(i * 7 + Math.floor(time * 10)) % sparks.length];
+        spark.x = bx + (Math.random() - 0.5) * 0.1;
+        spark.y = Math.max(0.05, reachOf(bx) * (0.4 + Math.random() * 0.3));
+        spark.vx = (Math.random() - 0.5) * 0.9;
+        spark.vy = 0.35 + Math.random() * 0.6;
+        spark.life = 0.8 + Math.random() * 0.9;
+        spark.age = 0;
+      }
+    }
 
     for (let c = 0; c < cols; c += 1) {
       const x = ((c + 0.5) / cols) * wide;
@@ -165,6 +222,14 @@ export function mount(container, options = {}) {
         const n = 0.62 * noise((x + sway) * 5.2, y * 3.4 - time * 2.1, time * 0.5) + 0.38 * noise((x + sway) * 11, y * 7.5 - time * 3.4, time * 0.9 + 9);
         const near = Math.exp(-(((x - px) ** 2 + (y - py) ** 2) / 0.02)) * ptr.gain;
         let heat = (1 - y / reach) * 1.2 + (n - 0.56) * 1.5 + near * 0.5 + fan * 0.12;
+        // ちぎれて上る火の玉。上るほど小さく、淡くなる。
+        for (const blast of blasts) {
+          if (blast.ball <= 0 || blast.ball >= 1) continue;
+          const size = 0.12 * (1 - blast.ball * 0.55);
+          const bx = x - blast.x * wide + sway;
+          const by = y - (0.12 + blast.ball * 1.05);
+          heat += Math.exp(-(bx * bx + by * by) / (size * size)) * 1.3 * Math.sqrt(1 - blast.ball);
+        }
         heat = clamp(heat, 0, 1) * Math.min(1, intro.v * 1.4);
         if (heat <= 0.015) {
           flame[index] = SPACE;
@@ -226,6 +291,7 @@ export function mount(container, options = {}) {
         },
       });
   if (!reduced) animate(intro, { v: 1, duration: 1500, ease: 'outQuad' });
+  if (preview && !reduced) disposer.interval(() => stoke(), 4500);
 
   const refit = () => {
     if (g.fit() && reduced) tick(0.05);
@@ -243,11 +309,13 @@ export function mount(container, options = {}) {
   refit();
 
   return {
+    stoke,
     destroy() {
       resizeObserver.disconnect();
       intersectionObserver.disconnect();
       timer?.pause();
       utils.remove(intro);
+      utils.remove(blasts);
       disposer.run();
       removeRoot(root);
     },

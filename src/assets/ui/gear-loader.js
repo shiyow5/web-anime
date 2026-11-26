@@ -8,7 +8,7 @@ export const meta = {
   category: 'ui',
   libs: ['animejs'],
   description:
-    '向きの違う 5 枚の歯車が立体的にかみ合って回る、読み込み中の表示です。CSS の 3D 変形と SVG だけで作ってあり、歯数の比で速さが決まります。進み具合が増えると歯車が進み、輪と数字が伸びて、100 で全体が弾みます。戻り値の setProgress(n) に 0〜100 を渡して使います。ポインターで傾きます。',
+    '向きの違う 5 枚の歯車が立体的にかみ合って回る、読み込み中の表示です。CSS の 3D 変形と SVG だけで作ってあり、歯数の比で速さが決まります。進み具合が増えると歯車が進み、輪と数字が伸びて、100 で全体が弾みます。戻り値の setProgress(n) に 0〜100 を渡して使います。ポインターで傾きます。押すと、全体が逆回転して止まり、歯車が軸に沿って浮いてかみ合いが外れ、1 枚ずつ空回りしてから順にはまり直します。',
   params: {
     color: { type: 'color', label: '歯車の色', default: '#e9a23b' },
     accent: { type: 'color', label: '差し色', default: '#4fd1c5' },
@@ -73,7 +73,7 @@ export function gearPath(teeth, windows = 5) {
 }
 
 const CSS = `
-.ua-gl{position:absolute;inset:0;overflow:hidden;container-type:size;background:radial-gradient(circle at 50% 42%,color-mix(in srgb,var(--ua-c) 14%,var(--ua-bg)),var(--ua-bg) 62%)}
+.ua-gl{position:absolute;inset:0;overflow:hidden;cursor:pointer;container-type:size;background:radial-gradient(circle at 50% 42%,color-mix(in srgb,var(--ua-c) 14%,var(--ua-bg)),var(--ua-bg) 62%)}
 .ua-gl__scene{position:absolute;inset:0;perspective:150cqmin;perspective-origin:50% 44%}
 .ua-gl__rig,.ua-gl__gear,.ua-gl__pop,.ua-gl__spin{position:absolute;left:0;top:0;width:0;height:0;transform-style:preserve-3d}
 .ua-gl__rig{left:50%;top:43%}
@@ -180,14 +180,18 @@ export function mount(container, options = {}) {
 
   const state = { progress: p.auto ? (reduced ? 100 : 0) : p.progress };
   const pulse = { pop: 1 };
+  // かみ合いから外れた歯車が、それぞれ勝手に回ったぶんの角度。歯 1 枚ぶんの整数倍で止めれば、またかみ合う。
+  const free = Object.fromEntries(Object.keys(gears).map((key) => [key, { turn: 0 }]));
+  const kick = { back: 0 };
+  let slipping = false;
   const pointer = { x: 0, y: 0, sx: 0, sy: 0 };
   let angle = 0;
   let shown = state.progress;
   let seconds = 0;
 
   function render() {
-    const angles = trainAngles(angle);
-    for (const key of Object.keys(gears)) gears[key].spin.style.transform = `rotate(${(angles[key] * DEG).toFixed(2)}deg)`;
+    const angles = trainAngles(angle + kick.back);
+    for (const key of Object.keys(gears)) gears[key].spin.style.transform = `rotate(${((angles[key] + free[key].turn) * DEG).toFixed(2)}deg)`;
     // 全体も 2 つの軸でゆっくり向きを変える。
     const rx = -30 + Math.sin(seconds * 0.5) * 11 - pointer.sy * 16;
     const ry = 30 + Math.sin(seconds * 0.33) * 22 + pointer.sx * 22;
@@ -202,6 +206,43 @@ export function mount(container, options = {}) {
   function celebrate() {
     if (reduced) return;
     animate(pulse, { pop: [{ to: 1.12, duration: 160, ease: 'outQuad' }, { to: 1, duration: 900, ease: 'outElastic(1, .45)' }] });
+  }
+
+  // 押すと、逆回転して歯がきしみ、歯車が軸に沿って浮いてかみ合いが外れ、1 枚ずつ空回りしてから、順にはまり直す。
+  function slip() {
+    if (reduced) return;
+    const keys = Object.keys(gears);
+    const lift = Math.min(root.clientWidth, root.clientHeight) * 0.075;
+    utils.remove([kick, pulse, ...keys.map((key) => free[key]), ...keys.map((key) => gears[key].pop)]);
+    slipping = true;
+    // 準備。全体がかみ合ったまま逆に回り、止まる。
+    animate(kick, { back: [{ to: -0.55, duration: 260, ease: 'outQuad' }, { to: -0.5, duration: 120, ease: 'inOutQuad' }, { to: 0, duration: 1500, delay: 500, ease: 'inOutQuad' }] });
+    keys.forEach((key, i) => {
+      const pitch = TAU / TEETH[key];
+      const dir = i % 2 ? -1 : 1;
+      // いまの位置から、歯の枚数の整数倍だけ進んだ位置で止める。
+      const now = Math.round(free[key].turn / pitch);
+      const target = (now + dir * (TEETH[key] * 2 + 3 + i)) * pitch;
+      const start = 300 + i * 90;
+      // 山場。軸の方向へ浮いて外れ、勢いよく空回りする。小さい歯車ほど長く回る。
+      animate(gears[key].pop, {
+        translateZ: [
+          { to: (i % 2 ? -1 : 1) * lift, duration: 260, ease: 'outBack(2.5)' },
+          { to: (i % 2 ? -1 : 1) * lift, duration: 620 + i * 110 },
+          // 余韻。1 枚ずつ落ちて、かちりとはまる。
+          { to: 0, duration: 420, ease: 'outBounce' },
+        ],
+        scale: [{ to: 1.06, duration: 260 }, { to: 1.06, duration: 620 + i * 110 }, { to: 1, duration: 420, ease: 'outBounce' }],
+        delay: start,
+      });
+      animate(free[key], { turn: target, duration: 1150 + i * 110, delay: start + 80, ease: 'outCubic' });
+    });
+    animate(pulse, {
+      pop: [{ to: 0.95, duration: 260, ease: 'outQuad' }, { to: 1, duration: 300 }, { to: 1.07, duration: 140, delay: 1250, ease: 'outQuad' }, { to: 1, duration: 800, ease: 'outElastic(1, .45)' }],
+      onComplete() {
+        slipping = false;
+      },
+    });
   }
 
   let autoRun = null;
@@ -233,7 +274,8 @@ export function mount(container, options = {}) {
         const gained = Math.max(0, state.progress - shown);
         if (shown < 100 && state.progress >= 100) celebrate();
         shown = state.progress;
-        angle += dt * p.speed * 0.7 + gained * 0.09;
+        // 外れている間は、待機中の回転を止める。
+        angle += (slipping ? 0 : dt * p.speed * 0.7) + gained * 0.09;
         render();
       },
     });
@@ -248,6 +290,8 @@ export function mount(container, options = {}) {
       pointer.x = 0;
       pointer.y = 0;
     });
+    disposer.listen(root, 'pointerdown', slip);
+    if (p.preview) disposer.interval(slip, 4600);
     // 登場。歯車が 1 枚ずつ弾んで現れる。
     animate(Object.values(gears).map((g) => g.pop), { scale: [0, 1], duration: 900, ease: 'outBack(1.6)', delay: stagger(110) });
     if (p.auto) {
@@ -267,7 +311,7 @@ export function mount(container, options = {}) {
     destroy() {
       disposer.run();
       autoRun?.pause();
-      utils.remove([state, pulse]);
+      utils.remove([state, pulse, kick, ...Object.values(free)]);
       removeRoot(root);
     },
   };

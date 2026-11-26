@@ -7,6 +7,8 @@
 // 素材ごとに 2 枚の画像を test-results/smoke/ に保存する。
 //   <id>.png          個別ページでの表示（幅 900px ほどの大きな枠）
 //   <id>-preview.png  一覧の小さな枠と同じ条件（幅 380px、preview: true）での表示
+//   <id>-tap.png      タップの 0.45 秒後
+//   <id>-tap2.png     タップの 1.5 秒後
 
 import { mkdirSync } from 'node:fs';
 import { chromium } from '@playwright/test';
@@ -40,6 +42,24 @@ let failed = false;
 
 try {
   for (const id of ids) {
+    // ほかの作業でファイルが保存されると、開発用サーバーがページを読み込み直して途中で落ちる。3 回まで撮り直す。
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        await check(id);
+        break;
+      } catch (error) {
+        if (attempt === 3) throw error;
+        console.log(`    ${id}: 途中でページが読み込み直されたので、撮り直します（${attempt} 回目）`);
+      }
+    }
+  }
+} finally {
+  await browser.close();
+}
+process.exit(failed ? 1 : 0);
+
+async function check(id) {
+  {
     const problems = [];
 
     // 個別ページ。ポインターを動かし、クリックもしてみる。
@@ -54,8 +74,12 @@ try {
     await page.mouse.move(300, 300);
     await page.mouse.move(620, 480, { steps: 8 });
     await stage.screenshot({ path: `${OUT}/${id}.png` });
+    // タップした直後と、少し経ったあとの 2 枚を撮る。タップの反応を目で確かめるため。
     await page.mouse.click(450, 420);
-    await page.waitForTimeout(600);
+    await page.waitForTimeout(450);
+    await stage.screenshot({ path: `${OUT}/${id}-tap.png` });
+    await page.waitForTimeout(1100);
+    await stage.screenshot({ path: `${OUT}/${id}-tap2.png` });
     await page.close();
 
     // 一覧の小さな枠と同じ条件。表示して画面を撮り、片付けて要素が残らないことを見る。
@@ -99,7 +123,4 @@ try {
       console.log(`OK  ${id}  →  ${OUT}/${id}.png, ${OUT}/${id}-preview.png`);
     }
   }
-} finally {
-  await browser.close();
 }
-process.exit(failed ? 1 : 0);

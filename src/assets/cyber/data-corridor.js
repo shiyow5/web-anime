@@ -9,7 +9,7 @@ export const meta = {
   category: 'cyber',
   libs: ['three', 'animejs'],
   description:
-    '四角い枠が奥へ連なる回廊を、まっすぐ進みます。壁と床には、グラフ・記号の列・波形を映した板が並び、枠はゆっくりねじれます。遠くは霧に消えます。押している間は加速します。データや通信を扱うサービスの導入画面に合います。',
+    '四角い枠が奥へ連なる回廊を、まっすぐ進みます。壁と床には、グラフ・記号の列・波形を映した板が並び、枠はゆっくりねじれます。遠くは霧に消えます。タップすると、いったん減速してから光の波が手前から奥へ走り、波が通った枠が順に灯り、壁の板が次々に裏返って別の表示に切り替わります。タップした側へ機体が傾き、押している間は加速を続けます。データや通信を扱うサービスの導入画面に合います。',
   params: {
     frame: { type: 'color', label: '枠の色', default: '#ffb347' },
     panel: { type: 'color', label: '板の色', default: '#3df0c8' },
@@ -93,12 +93,16 @@ export function mount(container, options = {}) {
   const stage = createStage(container, { fov: 62, cameraZ: 0, far: 120, background: p.background, preview: p.preview, bloom: { strength: 0.4, radius: 0.25, threshold: 0.35 } });
   stage.scene.fog = new THREE.Fog(p.background, 4, LENGTH * 0.72);
   const state = { speed: p.speed };
+  const pulse = { front: LENGTH * 2, glow: 0, bank: 0 };
   const textures = panelTextures();
 
   const sharedFrame = frameGeometry();
   const frameMaterial = new THREE.LineBasicMaterial({ color: p.frame });
+  const frameBase = new THREE.Color(p.frame);
+  const frameHot = new THREE.Color(p.panel).lerp(new THREE.Color('#ffffff'), 0.4);
   const frames = Array.from({ length: FRAMES }, (_, i) => {
-    const frame = new THREE.LineSegments(sharedFrame, frameMaterial);
+    // 波が通った枠だけを灯すので、枠ごとに素材を分ける。
+    const frame = new THREE.LineSegments(sharedFrame, frameMaterial.clone());
     frame.position.z = -i * SPACING;
     stage.scene.add(frame);
     return frame;
@@ -116,8 +120,10 @@ export function mount(container, options = {}) {
     if (wall === 2) mesh.position.set(along, -HALF_H + 0.05, 0);
     if (wall === 3) mesh.position.set(along, HALF_H - 0.05, 0);
     mesh.rotation.set(wall >= 2 ? Math.PI / 2 : 0, wall < 2 ? Math.PI / 2 : 0, 0);
-    mesh.scale.setScalar(0.6 + Math.random() * 0.7);
+    const size = 0.6 + Math.random() * 0.7;
+    mesh.scale.setScalar(size);
     const holder = new THREE.Group();
+    holder.userData = { mesh, size, kind: i % materials.length, flip: { v: 1 }, seen: true, swapped: true };
     holder.add(mesh);
     holder.position.z = -Math.random() * LENGTH;
     stage.scene.add(holder);
@@ -127,6 +133,28 @@ export function mount(container, options = {}) {
   const twistAt = (z, time) => Math.sin(z * 0.07 + time * 0.25) * p.twist;
   stage.onFrame((time, dt) => {
     const move = state.speed * dt;
+    for (const frame of frames) {
+      const gap = -frame.position.z - pulse.front;
+      const heat = Math.exp(-(gap * gap) / 14) * pulse.glow;
+      frame.material.color.copy(frameBase).lerp(frameHot, heat);
+      frame.scale.setScalar(1 - heat * 0.05);
+    }
+    for (const panel of panels) {
+      const data = panel.userData;
+      // 波が届いた板から順に裏返す。半分まで返ったところで、映す絵を次のものに替える。
+      if (!data.seen && -panel.position.z < pulse.front) {
+        data.seen = true;
+        data.swapped = false;
+        data.flip.v = 0;
+        animate(data.flip, { v: 1, duration: 560, ease: 'inOutQuad' });
+      }
+      if (!data.swapped && data.flip.v >= 0.5) {
+        data.swapped = true;
+        data.kind = (data.kind + 1) % materials.length;
+        data.mesh.material = materials[data.kind];
+      }
+      data.mesh.scale.x = data.size * Math.max(0.02, Math.abs(Math.cos(Math.PI * data.flip.v)));
+    }
     for (const object of [...frames, ...panels]) {
       object.position.z += move;
       // 通り過ぎたものは、いちばん奥へ戻す。
@@ -134,22 +162,67 @@ export function mount(container, options = {}) {
       object.rotation.z = twistAt(object.position.z, time);
     }
     stage.camera.position.set(stage.pointer.sx * 0.5, stage.pointer.sy * 0.3, 0);
-    stage.camera.rotation.set(stage.pointer.sy * 0.12, -stage.pointer.sx * 0.18, twistAt(0, time));
+    stage.camera.rotation.set(stage.pointer.sy * 0.12, -stage.pointer.sx * 0.18 - pulse.bank * 0.25, twistAt(0, time) - pulse.bank);
   });
 
-  const boost = (on) => !stage.reduced && animate(state, { speed: on ? p.speed * 4 + 10 : p.speed, duration: on ? 600 : 1500, ease: on ? 'inQuad' : 'outExpo' });
-  const boostOn = () => boost(true);
-  const boostOff = () => boost(false);
+  const settle = () => animate(state, { speed: p.speed, duration: 1500, ease: 'outExpo' });
+  let held = false;
+  let surging = false;
+  // タップの仕掛け。減速（準備）→ 光の波が奥へ走り、枠が灯って板が裏返る（山場）→ 速さと傾きが収まる（余韻）。
+  function pulseWave(event) {
+    if (stage.reduced) return;
+    const rect = container.getBoundingClientRect();
+    const side = event?.clientX === undefined ? (Math.random() < 0.5 ? -0.7 : 0.7) : ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    utils.remove([pulse, state]);
+    pulse.front = -2;
+    for (const panel of panels) panel.userData.seen = false;
+    surging = true;
+    animate(state, {
+      speed: [
+        { to: p.speed * 0.2, duration: 180, ease: 'outQuad' },
+        { to: p.speed * 4 + 10, duration: 620, ease: 'inQuad' },
+      ],
+      onComplete() {
+        surging = false;
+        if (!held) settle();
+      },
+    });
+    animate(pulse, { front: LENGTH * 0.8, duration: 1700, delay: 160, ease: 'outQuad' });
+    animate(pulse, {
+      glow: [
+        { to: 1, duration: 120, ease: 'outQuad' },
+        { to: 0, duration: 800, delay: 1300, ease: 'inQuad' },
+      ],
+    });
+    animate(pulse, {
+      bank: [
+        { to: side * 0.3, duration: 320, ease: 'outQuad' },
+        { to: 0, duration: 1500, ease: 'outElastic(1, .6)' },
+      ],
+    });
+  }
+  const boostOn = (event) => {
+    held = true;
+    pulseWave(event);
+  };
+  const boostOff = () => {
+    if (!held) return;
+    held = false;
+    if (!surging && !stage.reduced) settle();
+  };
   container.addEventListener('pointerdown', boostOn);
   window.addEventListener('pointerup', boostOff);
   container.addEventListener('pointerleave', boostOff);
+  const auto = p.preview && !stage.reduced ? setInterval(() => pulseWave(), 4600) : 0;
 
   return {
+    pulseWave,
     destroy() {
+      clearInterval(auto);
       container.removeEventListener('pointerdown', boostOn);
       window.removeEventListener('pointerup', boostOff);
       container.removeEventListener('pointerleave', boostOff);
-      utils.remove(state);
+      utils.remove([state, pulse, ...panels.map((panel) => panel.userData.flip)]);
       for (const texture of textures) texture.dispose();
       stage.destroy();
     },

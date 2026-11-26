@@ -1,5 +1,5 @@
 import { animate, splitText, stagger, utils } from 'animejs';
-import { createDisposer, createRoot, h, injectStyle, prefersReducedMotion, removeRoot, s } from '../../lib/dom.js';
+import { createDisposer, createRoot, h, injectStyle, localPointer, prefersReducedMotion, removeRoot, s } from '../../lib/dom.js';
 import { resolveParams } from '../../lib/params.js';
 
 const VARIANTS = ['curve', 'stripes', 'circle'];
@@ -10,7 +10,7 @@ export const meta = {
   category: 'transition',
   libs: ['animejs'],
   description:
-    'ページを切り替えるときに、幕で画面を覆ってから次の内容を見せます。曲線でせり上がる幕、縦じまの幕、円が広がる幕の 3 種類があります。戻り値の go() を呼ぶと、好きなタイミングで切り替えられます。',
+    'ページを切り替えるときに、幕で画面を覆ってから次の内容を見せます。曲線でせり上がる幕、縦じまの幕、円が広がる幕の 3 種類があります。画面のどこを押しても切り替わり、押した位置が起点になります。題名の文字が押した側から順に抜け落ち、曲線の幕は押した位置を山の頂点にしてせり上がり、縦じまは押した列から左右へ広がり、円は押した点から広がって、同じ点から穴が開いて次のページが見えます。戻り値の go() を呼ぶと、好きなタイミングで切り替えられます。',
   params: {
     variant: {
       type: 'select',
@@ -37,7 +37,7 @@ const PAGES = [
 const STRIPES = 6;
 
 const CSS = `
-.ua-pc{position:absolute;inset:0;overflow:hidden;container-type:size;font-family:var(--ua-display,system-ui,sans-serif)}
+.ua-pc{position:absolute;inset:0;overflow:hidden;container-type:size;cursor:pointer;font-family:var(--ua-display,system-ui,sans-serif)}
 .ua-pc__page{position:absolute;inset:0;display:grid;place-content:center;justify-items:center;gap:2.5cqw;background:var(--bg);color:var(--fg)}
 .ua-pc__title{margin:0;font-size:clamp(28px,15cqw,200px);font-weight:800;letter-spacing:-0.04em;line-height:1}
 .ua-pc__note{margin:0;font-size:clamp(11px,2.2cqw,20px)}
@@ -52,12 +52,13 @@ const CSS = `
 `;
 
 // 曲線の幕。同じ命令の並びにそろえてあるので、d 属性をそのまま補間できる。
+// rising と leaving は、山の頂点の左右の位置（0〜100）を受け取る。
 const CURVE = {
   hiddenBottom: 'M 0 100 V 100 Q 50 100 100 100 V 100 Z',
-  rising: 'M 0 100 V 45 Q 50 0 100 45 V 100 Z',
+  rising: (x) => `M 0 100 V 52 Q ${x} -30 100 52 V 100 Z`,
   coverFromBottom: 'M 0 100 V 0 Q 50 0 100 0 V 100 Z',
   coverFromTop: 'M 0 0 V 100 Q 50 100 100 100 V 0 Z',
-  leaving: 'M 0 0 V 55 Q 50 100 100 55 V 0 Z',
+  leaving: (x) => `M 0 0 V 48 Q ${x} 130 100 48 V 0 Z`,
   hiddenTop: 'M 0 0 V 0 Q 50 0 100 0 V 0 Z',
 };
 
@@ -82,55 +83,69 @@ export function mount(container, options = {}) {
   const stripes = Array.from({ length: STRIPES }, () => h('i'));
   const stripeLayer = h('div', { class: 'ua-pc__layer ua-pc__stripes' }, stripes);
   const disc = h('div', { class: 'ua-pc__layer ua-pc__disc' });
-  const discState = { radius: 0, opacity: 1 };
+  const discState = { radius: 0, hole: 0 };
   root.append(page, curveLayer, stripeLayer, disc);
 
+  // 幕ごとの覆い方と外し方。o は起点（押した位置、0〜1）。
+  const stripeFrom = (o) => Math.min(STRIPES - 1, Math.floor(o.x * STRIPES));
+  const setHole = (o) => {
+    const hole = `radial-gradient(circle at ${o.x * 100}% ${o.y * 100}%,transparent ${discState.hole}cqmax,#000 calc(${discState.hole}cqmax + 1px))`;
+    disc.style.webkitMaskImage = hole;
+    disc.style.maskImage = hole;
+  };
   const transitions = {
     curve: {
-      async cover() {
+      async cover(o) {
+        const peak = (10 + o.x * 80).toFixed(1);
         curvePath.setAttribute('d', CURVE.hiddenBottom);
         await run(curvePath, {
           d: [
-            { to: CURVE.rising, duration: t(380), ease: 'inQuad' },
+            { to: CURVE.rising(peak), duration: t(380), ease: 'inQuad' },
             { to: CURVE.coverFromBottom, duration: t(380), ease: 'outQuad' },
           ],
         });
       },
-      async reveal() {
+      async reveal(o) {
+        const peak = (10 + o.x * 80).toFixed(1);
         curvePath.setAttribute('d', CURVE.coverFromTop);
         await run(curvePath, {
           d: [
-            { to: CURVE.leaving, duration: t(380), ease: 'inQuad' },
+            { to: CURVE.leaving(peak), duration: t(380), ease: 'inQuad' },
             { to: CURVE.hiddenTop, duration: t(380), ease: 'outQuad' },
           ],
         });
       },
     },
     stripes: {
-      async cover() {
+      async cover(o) {
         utils.set(stripes, { transformOrigin: '50% 100%' });
-        await run(stripes, { scaleY: [0, 1], duration: t(520), ease: 'inOutQuart', delay: stagger(t(55)) });
+        await run(stripes, { scaleY: [0, 1], duration: t(520), ease: 'inOutQuart', delay: stagger(t(70), { from: stripeFrom(o) }) });
       },
-      async reveal() {
+      async reveal(o) {
         utils.set(stripes, { transformOrigin: '50% 0%' });
-        await run(stripes, { scaleY: 0, duration: t(520), ease: 'inOutQuart', delay: stagger(t(55)) });
+        await run(stripes, { scaleY: 0, duration: t(520), ease: 'inOutQuart', delay: stagger(t(70), { from: stripeFrom(o) }) });
       },
     },
     circle: {
-      async cover() {
-        disc.style.opacity = '1';
+      async cover(o) {
+        disc.style.maskImage = '';
+        disc.style.webkitMaskImage = '';
         await run(discState, {
-          radius: [0, 75],
-          duration: t(700),
+          radius: [0, 150],
+          duration: t(760),
           ease: 'inOutQuart',
           onUpdate: () => {
-            disc.style.clipPath = `circle(${discState.radius}% at 50% 50%)`;
+            disc.style.clipPath = `circle(${discState.radius}cqmax at ${o.x * 100}% ${o.y * 100}%)`;
           },
         });
       },
-      async reveal() {
-        await run(disc, { opacity: 0, duration: t(450), ease: 'outQuad' });
+      // 覆ったときと同じ点から、穴が開いて次のページが見える。
+      async reveal(o) {
+        discState.hole = 0;
+        await run(discState, { hole: [0, 150], duration: t(760), ease: 'inOutQuart', onUpdate: () => setHole(o) });
         disc.style.clipPath = 'circle(0% at 50% 50%)';
+        disc.style.maskImage = '';
+        disc.style.webkitMaskImage = '';
       },
     },
   };
@@ -156,29 +171,47 @@ export function mount(container, options = {}) {
     animate(note, { opacity: [0, 1], y: [12, 0], duration: t(600), ease: 'outQuart', delay: t(250) });
   }
 
-  // 幕で覆う → 中身を差し替える → 幕を外す、の順に進める。
-  async function go(variant) {
+  // 準備: 題名の文字が、起点に近い側から順に抜け落ちる。
+  function outro(o) {
+    const chars = titleSplit?.chars ?? [];
+    if (!chars.length) return;
+    const from = Math.min(chars.length - 1, Math.max(0, Math.round(o.x * (chars.length - 1))));
+    utils.remove([...chars, note]);
+    animate(chars, { y: '110%', rotate: (_, i) => (i - from) * 6, duration: t(360), ease: 'inBack(2)', delay: stagger(t(35), { from }) });
+    animate(note, { opacity: 0, y: 12, duration: t(260), ease: 'inQuad' });
+  }
+
+  // 題名が抜ける → 幕で覆う → 中身を差し替える → 幕を外す、の順に進める。origin は起点（0〜1）。
+  async function go(variant, origin) {
     if (busy || destroyed) return;
     busy = true;
+    const o = { x: utils.clamp(origin?.x ?? 0.5, 0, 1), y: utils.clamp(origin?.y ?? 0.5, 0, 1) };
     const name = VARIANTS.includes(variant) ? variant : p.variant === 'cycle' ? VARIANTS[played % VARIANTS.length] : p.variant;
     played += 1;
     const transition = transitions[name];
-    if (!reduced) await transition.cover();
+    if (!reduced) {
+      outro(o);
+      await transition.cover(o);
+    }
     if (destroyed) return;
     index = (index + 1) % PAGES.length;
-    utils.remove(title.querySelectorAll('*'));
+    utils.remove([...title.querySelectorAll('*'), note]);
     // 前の題名の分割を解いてから書き換える。解かないと、分割ごとの監視が積み上がる。
     titleSplit?.revert();
     titleSplit = null;
     render();
     intro();
-    if (!reduced) await transition.reveal();
+    if (!reduced) await transition.reveal(o);
     busy = false;
   }
 
   render();
   intro();
-  disposer.listen(nextButton, 'click', () => go());
+  // ボタンを含め、画面のどこを押しても切り替える。押した位置を起点として渡す。
+  disposer.listen(root, 'click', (event) => {
+    const { x, y } = localPointer(event, root);
+    go(undefined, { x, y });
+  });
   const interval = p.preview ? 2600 : p.interval * 1000;
   if (interval > 0) disposer.interval(() => go(), interval);
 

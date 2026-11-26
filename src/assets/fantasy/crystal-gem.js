@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { animate, spring, stagger, utils } from 'animejs';
+import { animate, spring, stagger, steps, utils } from 'animejs';
 import { createStage } from '../../lib/stage.js';
 import { resolveParams } from '../../lib/params.js';
 
@@ -9,7 +9,7 @@ export const meta = {
   category: 'fantasy',
   libs: ['three', 'animejs'],
   description:
-    '六角柱の結晶の群れが、面ごとに色を変えながら浮かびます。読み込み時に地面から生えるように伸び、まわりで光の粒がまたたきます。クリックすると結晶が順に震えて、粒が外へ弾けます。',
+    '六角柱の結晶の群れが、面ごとに色を変えながら浮かびます。読み込み時に地面から生えるように伸び、まわりで光の粒がまたたきます。タップすると、タップした側の結晶から順に震えて光がちらつき、群れが砕けたように散ります。散った結晶は小さくなって転がりながら中心のまわりを 1 周し、元の位置へ吸い寄せられて組み直り、最後にもう一度光ります。',
   params: {
     colorA: { type: 'color', label: '色 A', default: '#6a3dff' },
     colorB: { type: 'color', label: '色 B', default: '#35e6ff' },
@@ -101,7 +101,8 @@ void main(){
 export function mount(container, options = {}) {
   const p = resolveParams(meta.params, options);
   const stage = createStage(container, { fov: 40, cameraZ: 7, background: p.background, preview: p.preview });
-  const state = { glow: 0, burst: 0 };
+  const state = { glow: 0, burst: 0, lean: 0 };
+  const orbit = { a: 0 };
   const crystalUniforms = {
     uTime: { value: 0 },
     uGlow: { value: 0 },
@@ -123,7 +124,7 @@ export function mount(container, options = {}) {
     mesh.scale.setScalar(stage.reduced ? size : 0.0001);
     pivot.add(mesh);
     cluster.add(pivot);
-    return { mesh, size, kick: { v: 0 } };
+    return { mesh, pivot, size, base: new THREE.Vector3(x, y, z), kick: { v: 0 }, fly: { v: 0 } };
   });
 
   const sparkleCount = Math.round(p.preview ? Math.min(p.sparkles, 80) : p.sparkles);
@@ -158,7 +159,18 @@ export function mount(container, options = {}) {
     cluster.rotation.y += dt * p.spin;
     cluster.rotation.x = 0.12 - stage.pointer.sy * 0.25;
     cluster.position.y = Math.sin(time * 0.7) * 0.08;
-    for (const crystal of crystals) crystal.mesh.rotation.y = crystal.kick.v * 0.6;
+    crystals.forEach((crystal, i) => {
+      const fly = crystal.fly.v;
+      // 散っているあいだは、外へ離れて小さくなり、転がりながら中心のまわりを回る。
+      const angle = orbit.a * Math.min(1, Math.max(0, fly)) * (i % 2 ? 1 : -1);
+      const reach = 1 + fly * (0.9 + (i % 3) * 0.25);
+      const bx = crystal.base.x * reach + (crystal.base.x === 0 && crystal.base.z === 0 ? fly * 0.9 : 0);
+      const bz = crystal.base.z * reach;
+      crystal.pivot.position.set(bx * Math.cos(angle) + bz * Math.sin(angle), crystal.base.y + fly * (i % 2 ? 0.55 : -0.35) + Math.sin(crystal.kick.v * 40) * crystal.kick.v * 0.03, -bx * Math.sin(angle) + bz * Math.cos(angle));
+      crystal.pivot.scale.setScalar(1 - 0.5 * Math.min(1, Math.max(0, fly)));
+      crystal.mesh.rotation.set(fly * (2 + i) * 1.3, crystal.kick.v * 0.6 + fly * 3, 0);
+    });
+    cluster.rotation.z = state.lean;
   });
 
   const scales = crystals.map((c) => c.mesh.scale);
@@ -168,18 +180,62 @@ export function mount(container, options = {}) {
     animate(scales, { x: size, y: size, z: size, delay: stagger(110, { start: 150 }), ease: spring({ stiffness: 90, damping: 8 }) });
   }
 
-  function chime() {
+  // 砕けて組み直る。タップした側から順に震え、光がちらつく（準備）→ 群れが散り、小さくなって転がりながら
+  // 中心のまわりを 1 周する（山場）→ 元の位置へ吸い寄せられて組み直り、もう一度光る（余韻）。
+  const flies = crystals.map((c) => c.fly);
+  const seen = new THREE.Vector3();
+  function chime(event) {
     if (stage.reduced) return;
+    const rect = container.getBoundingClientRect();
+    const nx = event?.clientX === undefined ? 0 : ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    const ny = event?.clientY === undefined ? 0 : -(((event.clientY - rect.top) / rect.height) * 2 - 1);
+    const ranks = crystals
+      .map((crystal, i) => {
+        crystal.pivot.getWorldPosition(seen).project(stage.camera);
+        return { i, gap: Math.hypot(seen.x - nx, seen.y - ny) };
+      })
+      .sort((a, b) => a.gap - b.gap)
+      .reduce((map, item, rank) => ({ ...map, [item.i]: rank }), {});
+    const order = (_, i) => ranks[i] * 45;
+    utils.remove([state, orbit, ...kicks, ...flies]);
+    orbit.a = 0;
     animate(kicks, {
       v: [
         { to: 1, duration: 120, ease: 'outQuad' },
         { to: 0, duration: 1400, ease: 'outElastic(1, .3)' },
       ],
-      delay: stagger(60),
+      delay: order,
     });
+    animate(flies, {
+      v: [
+        { to: 1, duration: 520, ease: 'outExpo' },
+        { to: 1, duration: 760 },
+        { to: 0, duration: 640, ease: 'inOutBack(2.2)' },
+      ],
+      delay: (_, i) => 300 + ranks[i] * 45,
+    });
+    animate(orbit, { a: Math.PI * 2, duration: 1750, delay: 320, ease: 'inOutSine' });
     animate(state, {
-      glow: [{ to: 1, duration: 150, ease: 'outQuad' }, { to: 0, duration: 1300, ease: 'outExpo' }],
-      burst: [{ to: 1, duration: 500, ease: 'outExpo' }, { to: 0, duration: 1600, ease: 'inOutQuad' }],
+      glow: [
+        { to: 0.6, duration: 60, ease: steps(1) },
+        { to: 0.1, duration: 70, ease: steps(1) },
+        { to: 0.8, duration: 60, ease: steps(1) },
+        { to: 0.25, duration: 80, ease: steps(1) },
+        { to: 1, duration: 110, ease: 'outQuad' },
+        { to: 0.15, duration: 1300, ease: 'outQuad' },
+        { to: 1, duration: 160, delay: 260, ease: 'outQuad' },
+        { to: 0, duration: 1100, ease: 'outExpo' },
+      ],
+      burst: [
+        { to: 1, duration: 520, delay: 300, ease: 'outExpo' },
+        { to: 0.25, duration: 1100, ease: 'inOutQuad' },
+        { to: 0.8, duration: 200, ease: 'outQuad' },
+        { to: 0, duration: 1300, ease: 'inOutQuad' },
+      ],
+      lean: [
+        { to: -nx * 0.22, duration: 300, ease: 'outQuad' },
+        { to: 0, duration: 1900, ease: 'outElastic(1, .5)' },
+      ],
     });
   }
   container.addEventListener('click', chime);
@@ -190,7 +246,7 @@ export function mount(container, options = {}) {
     destroy() {
       clearInterval(autoChime);
       container.removeEventListener('click', chime);
-      utils.remove([state, ...scales, ...kicks]);
+      utils.remove([state, orbit, ...scales, ...kicks, ...flies]);
       stage.destroy();
     },
   };

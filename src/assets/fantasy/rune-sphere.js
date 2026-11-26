@@ -10,7 +10,7 @@ export const meta = {
   category: 'fantasy',
   libs: ['three', 'animejs'],
   description:
-    '作りものの文字を巻いた帯の輪が、1 本ずつ違う軸で転がり、全体で球の形を作ります。中心には光の核があり、輪どうしが交わる点で火花が散ります。クリックすると輪が 1 枚の平面にそろい、弾けて元の軸へ戻ります。召喚や起動の場面、見出しの背景に使えます。',
+    '作りものの文字を巻いた帯の輪が、1 本ずつ違う軸で転がり、全体で球の形を作ります。中心には光の核があり、輪どうしが交わる点で火花が散ります。タップすると、輪が 1 本ずつ順に、タップした側へ傾いた 1 枚の平面へ倒れ込んでそろいます。少し溜めてから光の輪が弾け、輪は隣の輪が持っていた軸と入れ替わって、内側の輪から順にほどけていきます。召喚や起動の場面、見出しの背景に使えます。',
   params: {
     color: { type: 'color', label: '輪の色', default: '#ffd28a' },
     accent: { type: 'color', label: '2 色目の輪と火花の色', default: '#c59bff' },
@@ -59,6 +59,7 @@ function createRing(index, total, random, colors, seed, preview) {
     scrollSpeed: (0.25 + random() * 0.3) * (index % 2 ? 1 : -1),
     normal: new THREE.Vector3(0, 1, 0),
     intro: 1,
+    fold: 0,
   };
 }
 
@@ -159,7 +160,7 @@ export function mount(container, options = {}) {
       // 登場のあいだは、余分に回り込みながら定位置へ収まる。
       qTumble.setFromAxisAngle(ring.tumbleAxis, ring.tumble + (1 - ring.intro) * 2.6);
       qNow.copy(ring.base).multiply(qTumble);
-      ring.holder.quaternion.slerpQuaternions(qNow, flat, align);
+      ring.holder.quaternion.slerpQuaternions(qNow, flatAim, Math.min(1.25, Math.max(-0.25, ring.fold)));
       ring.holder.scale.setScalar(Math.max(0.001, ring.intro));
       ring.band.rotation.y = scroll * ring.scrollSpeed * (1 + align * 3);
       ring.band.material.opacity = 0.95 * Math.min(1, ring.intro * 1.4);
@@ -203,9 +204,21 @@ export function mount(container, options = {}) {
     system.rotation.y = stage.pointer.sx * 0.4;
   });
 
-  // 輪を 1 枚の平面にそろえ、少し溜めてから弾けて元の軸へ戻す。
-  function align() {
+  // 輪が 1 本ずつ、タップした側へ傾いた平面へ倒れ込む（準備）→ そろったところで光の輪が弾け、
+  // 輪の軸が隣どうしで入れ替わる（山場）→ 内側の輪から順に、新しい軸へほどける（余韻）。
+  const flatAim = flat.clone();
+  const aimTilt = new THREE.Quaternion();
+  const aimEuler = new THREE.Euler();
+  let swapTimer = 0;
+  function align(event) {
     if (stage.reduced) return;
+    const rect = container.getBoundingClientRect();
+    const nx = event?.clientX === undefined ? 0 : ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    const ny = event?.clientY === undefined ? 0 : ((event.clientY - rect.top) / rect.height) * 2 - 1;
+    flatAim.copy(aimTilt.setFromEuler(aimEuler.set(ny * 0.55, 0, -nx * 0.55))).multiply(flat);
+    utils.remove(state);
+    utils.remove(rings);
+    for (const ring of rings) ring.intro = 1;
     animate(state, {
       align: [
         { to: 1, duration: 650, ease: 'inOutCubic' },
@@ -213,6 +226,24 @@ export function mount(container, options = {}) {
         { to: 0, duration: 1100, ease: 'outBack(2.4)' },
       ],
     });
+    const last = rings.length - 1;
+    rings.forEach((ring, i) => {
+      const down = i * Math.min(70, 380 / Math.max(1, last));
+      const up = 930 + (last - i) * 80;
+      animate(ring, {
+        fold: [
+          { to: 1, duration: 480, delay: down, ease: 'inOutCubic' },
+          { to: 1, duration: Math.max(1, up - down - 480) },
+          { to: 0, duration: 1100, ease: 'outBack(2.4)' },
+        ],
+      });
+    });
+    // 全部がそろっている間に、土台の向きを隣の輪と入れ替える。そろっているので、入れ替えた瞬間は見えない。
+    clearTimeout(swapTimer);
+    swapTimer = setTimeout(() => {
+      const bases = rings.map((ring) => ring.base.clone());
+      rings.forEach((ring, i) => ring.base.copy(bases[(i + 1) % rings.length]));
+    }, 900);
     state.burst = 0;
     animate(state, { burst: 1, duration: 950, delay: 930, ease: 'outExpo' });
   }
@@ -230,6 +261,7 @@ export function mount(container, options = {}) {
     align,
     destroy() {
       clearInterval(timer);
+      clearTimeout(swapTimer);
       container.removeEventListener('pointerdown', align);
       utils.remove(state);
       utils.remove(rings);

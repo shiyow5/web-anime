@@ -8,7 +8,7 @@ export const meta = {
   category: 'ascii',
   libs: ['animejs'],
   description:
-    '入力した英数字を、小さな記号を何百個も並べた大きな字形で 1 文字ずつ打ち出します。打った瞬間は線が太くにじみ、すぐに落ち着きます。打ち終わるとカーソルが点滅し、クリックすると最初から打ち直します。タイトルの登場や、短い合言葉を見せる場面に使えます。',
+    '入力した英数字を、小さな記号を何百個も並べた大きな字形で 1 文字ずつ打ち出します。打った瞬間は線が太くにじみ、すぐに落ち着きます。打ち終わるとカーソルが点滅し、クリックすると、打った字を後ろから 1 文字ずつ、にじませながら消していき、消し終わると少し間を置いて最初から打ち直します。タイトルの登場や、短い合言葉を見せる場面に使えます。',
   params: {
     text: { type: 'text', label: '打ち出す文字（英数字）', default: 'HELLO WORLD', maxLength: 28 },
     color: { type: 'color', label: '文字の色', default: '#f3ead7' },
@@ -247,6 +247,7 @@ export function mount(container, options = {}) {
     });
   }
 
+  let tapErase = false;
   function restart() {
     typed = 0;
     phase = 'typing';
@@ -272,9 +273,18 @@ export function mount(container, options = {}) {
     } else if (phase === 'erasing') {
       while (typed > 0 && clock >= nextAt) {
         typed -= 1;
-        nextAt += 0.035;
+        nextAt += tapErase ? 0.075 : 0.035;
+        if (tapErase && typed > 0) {
+          const ink = inks[typed - 1];
+          utils.remove(ink);
+          ink.v = 1.6;
+          animate(ink, { v: 1, duration: 260, ease: 'outQuad' });
+        }
       }
-      if (typed === 0) restart();
+      if (typed === 0) {
+        tapErase = false;
+        restart();
+      }
     }
   }
 
@@ -338,8 +348,16 @@ export function mount(container, options = {}) {
     g.flush();
   }
 
+  // 後ろから消してから打ち直す。消す直前の字は、押しつけたようにいったん太くにじむ。
   disposer.listen(root, 'pointerdown', () => {
-    if (!reduced) restart();
+    if (reduced) return;
+    if (typed === 0) {
+      restart();
+      return;
+    }
+    phase = 'erasing';
+    tapErase = true;
+    nextAt = clock;
   });
 
   let last = performance.now();

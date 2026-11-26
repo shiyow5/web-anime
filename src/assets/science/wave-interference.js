@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { animate, utils } from 'animejs';
+import { animate, createTimer, utils } from 'animejs';
 import { createStage } from '../../lib/stage.js';
 import { resolveParams } from '../../lib/params.js';
 import { fullscreenVertex } from '../../lib/glsl.js';
@@ -11,7 +11,7 @@ export const meta = {
   category: 'science',
   libs: ['three', 'animejs'],
   description:
-    '2 つの波源から同じ波長の波が輪になって広がり、重なります。2 つの波源からの距離の差が波長の整数倍になる場所では強め合い、半波長ずれる場所では打ち消し合って、双曲線の縞ができます。ポインターを動かすと片方の波源が付いてきて、縞の本数と向きが変わります。上の帯は、その位置での波の強さです。',
+    '2 つの波源から同じ波長の波が輪になって広がり、重なります。2 つの波源からの距離の差が波長の整数倍になる場所では強め合い、半波長ずれる場所では打ち消し合って、双曲線の縞ができます。ポインターを動かすと片方の波源が付いてきて、縞の本数と向きが変わります。タップすると、その場所に石を落としたように水面がへこんで、3 つめの波が輪になって広がります。波の先頭には細い輪が付き、もとの 2 つの波と重なって縞を乱しながら、数秒かけて弱まっていきます。上の帯は、その位置での波の強さです。',
   params: {
     wavelength: { type: 'range', label: '波長', min: 0.06, max: 0.4, step: 0.01, default: 0.16 },
     separation: { type: 'range', label: '波源の間隔', min: 0.1, max: 1.6, step: 0.02, default: 0.62 },
@@ -33,6 +33,7 @@ uniform float uOmega;
 uniform float uAspect;
 uniform float uNodes;
 uniform float uReveal;
+uniform vec4 uDrops[3];
 uniform vec3 uTrough;
 uniform vec3 uCrest;
 uniform vec3 uAccent;
@@ -56,6 +57,19 @@ void main(){
   float pa = uK * ra - uOmega * uTime;
   float pb = uK * rb - uOmega * uTime;
   float height = aa * cos(pa) + ab * cos(pb);
+  // タップで落とした波。先頭より外へはまだ届かず、時間とともに弱まる。
+  float fronts = 0.0;
+  for (int i = 0; i < 3; i++) {
+    float age = uTime - uDrops[i].z;
+    if (age < 0.0 || age > 7.0) continue;
+    float rc = length(p - uDrops[i].xy);
+    float front = age * uOmega / uK * 1.6 + 0.02;
+    float amp = 2.2 * exp(-age * 0.75) * smoothstep(0.0, 0.12, age);
+    height += amp * falloff(rc) * cos(uK * rc - uOmega * 1.6 * age) * smoothstep(front, front - 0.22, rc);
+    // 落ちた瞬間のへこみ。
+    height -= 1.6 * exp(-age * 9.0) * smoothstep(0.16, 0.0, rc);
+    fronts += smoothstep(0.014, 0.0, abs(rc - front)) * exp(-age * 0.9);
+  }
   // 時間で平均した振幅。2 つの波の位相差だけで決まる。
   float envelope = sqrt(max(aa * aa + ab * ab + 2.0 * aa * ab * cos(uK * (ra - rb)), 0.0));
   float total = aa + ab + 1e-4;
@@ -72,6 +86,8 @@ void main(){
   // 打ち消し合う線。
   float node = smoothstep(0.16, 0.02, envelope / total) * smoothstep(0.05, 0.2, min(ra, rb));
   color = mix(color, mix(color, uAccent, 0.75), node * uNodes * 0.8);
+
+  if (!strip) color = mix(color, uAccent, clamp(fronts, 0.0, 1.0) * 0.85);
 
   // 波源の印。
   float ring = min(abs(ra - 0.035), abs(rb - 0.035));
@@ -114,6 +130,7 @@ export function mount(container, options = {}) {
     uAspect: { value: 1 },
     uNodes: { value: p.nodes ? 1 : 0 },
     uReveal: { value: stage.reduced ? 9 : 0 },
+    uDrops: { value: [0, 1, 2].map(() => new THREE.Vector4(0, 0, -100, 0)) },
     uTrough: { value: new THREE.Color(p.trough) },
     uCrest: { value: new THREE.Color(p.crest) },
     uAccent: { value: new THREE.Color(p.accent) },
@@ -176,10 +193,28 @@ export function mount(container, options = {}) {
     }
   });
 
+  // タップした場所に波を落とす。3 つまで重ねられる。
+  let nextDrop = 0;
+  function drop(x = 0, y = 0) {
+    if (stage.reduced) return;
+    uniforms.uDrops.value[nextDrop].set(x * uniforms.uAspect.value, Math.min(y, 0.75), uniforms.uTime.value, 0);
+    nextDrop = (nextDrop + 1) % 3;
+  }
+  const onPointerDown = (event) => {
+    const rect = container.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    drop(((event.clientX - rect.left) / rect.width) * 2 - 1, -(((event.clientY - rect.top) / rect.height) * 2 - 1));
+  };
+  container.addEventListener('pointerdown', onPointerDown);
+  const auto = p.preview && !stage.reduced ? createTimer({ duration: 4200, loop: true, onLoop: () => drop(Math.random() * 1.4 - 0.7, Math.random() * 1.2 - 0.7) }) : null;
+
   if (!stage.reduced) animate(uniforms.uReveal, { value: [0, 4.5], duration: 2400, ease: 'outQuad' });
 
   return {
+    drop,
     destroy() {
+      auto?.pause();
+      container.removeEventListener('pointerdown', onPointerDown);
       utils.remove(uniforms.uReveal);
       hud.remove();
       stage.destroy();

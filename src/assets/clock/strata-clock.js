@@ -8,7 +8,7 @@ export const meta = {
   category: 'clock',
   libs: ['animejs'],
   description:
-    '文字盤を 6 枚の透明な板に分け、CSS の立体変形で斜めに重ねた時計です。土台、分の目盛り、時の弧、秒の輪、針、数字の表示が、それぞれ別の高さに浮かびます。ポインターを乗せると板の間隔が開き、動かすと見る角度が変わります。WebGL を使いません。',
+    '文字盤を 6 枚の透明な板に分け、CSS の立体変形で斜めに重ねた時計です。土台、分の目盛り、時の弧、秒の輪、針、数字の表示が、それぞれ別の高さに浮かびます。ポインターを乗せると板の間隔が開き、動かすと見る角度が変わります。タップすると、板がいったん押しつぶされてから大きく開き、金庫のダイヤルのように 1 枚ずつ互い違いの向きへ回って、針が早回しで 1 周してから今の時刻に戻ります。WebGL を使いません。',
   params: {
     line: { type: 'color', label: '線の色', default: '#7df9ff' },
     accent: { type: 'color', label: '強調の色', default: '#ff2e88' },
@@ -101,7 +101,9 @@ export function mount(container, options = {}) {
   const scene = h('div', { class: 'ua-sc__scene' }, stack);
   root.appendChild(scene);
 
-  const state = { gap: p.gap, spin: 0 };
+  const state = { gap: p.gap, spin: 0, wind: 0 };
+  // タップで板を 1 枚ずつ回すときの角度（度）。
+  const twists = layers.map(() => ({ r: 0 }));
   const drops = layers.map(() => ({ z: reduced ? 0 : 520, o: reduced ? 1 : 0 }));
   let size = 400;
   let lastSecond = -1;
@@ -113,8 +115,8 @@ export function mount(container, options = {}) {
     const hour = (now.getHours() % 12) + minute / 60;
     sweep.setAttribute('stroke-dashoffset', (sweepLength * (1 - second / 60)).toFixed(1));
     dotArm.setAttribute('transform', `rotate(${(second * 6).toFixed(2)} ${C} ${C})`);
-    minuteHand.setAttribute('transform', `rotate(${(minute * 6).toFixed(2)} ${C} ${C})`);
-    hourHand.setAttribute('transform', `rotate(${(hour * 30).toFixed(2)} ${C} ${C})`);
+    minuteHand.setAttribute('transform', `rotate(${(minute * 6 + state.wind * 720).toFixed(2)} ${C} ${C})`);
+    hourHand.setAttribute('transform', `rotate(${(hour * 30 + state.wind * 360).toFixed(2)} ${C} ${C})`);
     spinner.setAttribute('transform', `rotate(${state.spin.toFixed(1)} ${C} ${C})`);
     if (now.getSeconds() !== lastSecond) {
       lastSecond = now.getSeconds();
@@ -128,7 +130,7 @@ export function mount(container, options = {}) {
     layers.forEach((el, i) => {
       // 重なりの中心が枠の中央に来るように、全体を半分だけ下げる。
       const lift = (i - (layers.length - 1) / 2) * state.gap * size;
-      el.style.transform = `translateZ(${(lift + drops[i].z).toFixed(1)}px)`;
+      el.style.transform = `translateZ(${(lift + drops[i].z).toFixed(1)}px) rotateZ(${twists[i].r.toFixed(2)}deg)`;
       el.style.opacity = String(drops[i].o);
     });
   }
@@ -186,24 +188,41 @@ export function mount(container, options = {}) {
     view.rotateZ((x - 0.5) * 70);
   });
 
+  // タップ。板を押しつぶしてから大きく開き、下の板から順に互い違いの向きへ回す。針は早回しで今の時刻へ戻る。
+  function dial() {
+    utils.remove(state);
+    utils.remove(twists);
+    const rest = hovering ? p.gap * 1.8 : p.gap;
+    animate(state, {
+      gap: [
+        { to: p.gap * 0.25, duration: 170, ease: 'outQuad' },
+        { to: Math.min(p.gap * 2.6, Math.max(p.gap, 0.13)), duration: 620, ease: 'outBack(2)' },
+        { to: rest, duration: 1500, ease: 'inOutQuart', delay: 500 },
+      ],
+    });
+    state.wind %= 1;
+    animate(state, { wind: [{ to: state.wind - 0.04, duration: 170, ease: 'outQuad' }, { to: 1, duration: 2300, ease: 'inOutCubic' }], onComplete: () => { state.wind = 0; } });
+    twists.forEach((twist, i) => {
+      if (i === 0) return;
+      twist.r %= 360;
+      const turn = (i % 2 ? 1 : -1) * 360;
+      animate(twist, { r: [{ to: twist.r - Math.sign(turn) * 14, duration: 170, ease: 'outQuad' }, { to: turn, duration: 1500 + i * 160, ease: 'outElastic(1, .7)' }], delay: i * 110, onComplete: () => { twist.r = 0; } });
+    });
+  }
+  disposer.listen(root, 'pointerdown', dial);
+
   // 起動。板が上から 1 枚ずつ降りてきて重なる。
   animate(drops, { z: 0, o: 1, duration: 1300, ease: 'outExpo', delay: stagger(130) });
   if (p.preview) {
     disposer.interval(() => {
-      if (hovering) return;
-      animate(state, {
-        gap: [
-          { to: p.gap * 1.8, duration: 900, ease: 'outExpo' },
-          { to: p.gap, duration: 1100, ease: 'inOutQuart', delay: 700 },
-        ],
-      });
+      if (!hovering) dial();
     }, 5200);
   }
 
   return {
     destroy() {
       disposer.run();
-      utils.remove([state, ...drops]);
+      utils.remove([state, ...drops, ...twists]);
       removeRoot(root);
     },
   };

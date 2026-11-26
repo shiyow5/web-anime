@@ -8,7 +8,7 @@ export const meta = {
   category: 'loader',
   libs: ['animejs'],
   description:
-    '内容が届くまで、灰色の骨組みの上を 1 本の光が流れます。読み込みが終わると、骨組みが上の行から時間差で本物の内容に置き換わります。一覧や記事など、形が決まっている画面の待ち時間に使います。「読み込み直す」を押すと最初からくり返します。',
+    '内容が届くまで、灰色の骨組みの上を 1 本の光が流れます。読み込みが終わると、骨組みが上の行から時間差で本物の内容に置き換わります。一覧や記事など、形が決まっている画面の待ち時間に使います。読み込み中に行を押すと、進捗の線が一気に走り、押した行から上下へ順に内容が現れます。内容が出ているときに行を押すと、その行から骨組みに戻って読み込み直します。「読み込み直す」を押すと最初からくり返します。',
   params: {
     load: { type: 'range', label: '読み込みにかかる時間（秒）', min: 0.8, max: 6, step: 0.2, default: 2.2 },
     hold: { type: 'range', label: '内容を見せる時間（秒）', min: 1, max: 10, step: 0.5, default: 3.5 },
@@ -36,7 +36,8 @@ const CSS = `
 .ua-sk__row{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:1em;padding:.95em 1.3em}
 .ua-sk__row+.ua-sk__row{border-top:1px solid #1c2a330d}
 .ua-sk__slot{position:relative;display:block;min-width:0}
-.ua-sk__bone{position:absolute;inset:0;border-radius:.4em;background-color:var(--ua-bone);
+.ua-sk__row{cursor:pointer}
+.ua-sk__bone{position:absolute;inset:0;border-radius:.4em;transform-origin:left;background-color:var(--ua-bone);
   background-image:linear-gradient(100deg,transparent 35%,#ffffffd9 50%,transparent 65%);background-repeat:no-repeat;background-size:60cqw 100%;
   background-position:calc(var(--ua-shine,-80) * 1cqw - var(--ox,0px)) 0}
 .ua-sk__slot--round .ua-sk__bone{border-radius:50%}
@@ -131,9 +132,14 @@ export function mount(container, options = {}) {
   const reals = slots.map((item) => item.real);
   const bones = slots.map((item) => item.bone);
 
-  function showSkeleton(instant) {
+  let loading = true;
+  // from は起点にする行。そこから離れた行ほど遅れて動く。
+  const lag = (row, from, i) => Math.abs(row - from) * 150 + (i % 5) * 55;
+
+  function showSkeleton(instant, from = 0) {
     waiting?.pause();
-    utils.remove([...reals, ...bones, bar, reload.firstChild]);
+    utils.remove([...reals, ...bones, bar, status, reload.firstChild]);
+    loading = true;
     card.setAttribute('aria-busy', 'true');
     status.textContent = '読み込み中';
     sweep.play();
@@ -141,20 +147,26 @@ export function mount(container, options = {}) {
       utils.set(reals, { opacity: 0 });
       utils.set(bones, { opacity: 1 });
     } else {
-      animate(reals, { opacity: 0, duration: 220, ease: 'outQuad' });
-      animate(bones, { opacity: [0, 1], scaleX: 1, duration: 320, delay: 120, ease: 'outQuad' });
+      // 起点の行から順に、内容が薄れ、骨組みが左から伸びて覆う。
+      slots.forEach(({ real, bone, row }, i) => {
+        const delay = lag(row, from, i);
+        animate(real, { opacity: 0, duration: 200, delay, ease: 'outQuad' });
+        animate(bone, { opacity: [0, 1], scaleX: [0.25, 1], duration: 460, delay: delay + 80, ease: 'outExpo' });
+      });
     }
-    animate(bar, { scaleX: [0, 1], opacity: [1, 1], duration: p.load * 1000, ease: 'inOutQuad', onComplete: showContent });
+    animate(bar, { scaleX: [0, 1], opacity: [1, 1], duration: p.load * 1000, ease: 'inOutQuad', onComplete: () => showContent() });
   }
 
-  // 上の行から順に、骨組みを消して本物の内容を出す。
-  function showContent() {
+  // 起点の行から順に、骨組みを消して本物の内容を出す。
+  function showContent(from = 0) {
     if (destroyed) return;
+    loading = false;
     card.setAttribute('aria-busy', 'false');
     status.textContent = `${ITEMS.length} 件の新着`;
+    animate(status, { scale: [{ to: 1.22, duration: 140, ease: 'outQuad' }, { to: 1, duration: 600, ease: 'outElastic(1, .5)' }], delay: 380 });
     animate(bar, { opacity: 0, duration: 400, ease: 'outQuad' });
     slots.forEach(({ real, bone, row, kind }, i) => {
-      const delay = row * 150 + (i % 5) * 55;
+      const delay = lag(row, from, i);
       animate(bone, { opacity: 0, scaleX: kind === 'text' ? 0.96 : 1, duration: 320, delay, ease: 'outQuad' });
       if (kind === 'text') animate(real, { opacity: [0, 1], y: ['.5em', '0em'], duration: 650, delay: delay + 90, ease: 'outExpo' });
       else animate(real, { opacity: [0, 1], scale: [0.7, 1], duration: 800, delay: delay + 90, ease: 'outBack(1.8)' });
@@ -168,11 +180,29 @@ export function mount(container, options = {}) {
     });
   }
 
+  // 行を押したとき。読み込み中なら、進捗の線を一気に走らせて、その行から内容を出す。
+  // 内容が出ているなら、その行から骨組みに戻して読み込み直す。
+  function press(index) {
+    const rowEl = rows[index];
+    utils.remove(rowEl);
+    animate(rowEl, {
+      scale: [{ to: 0.975, duration: 110, ease: 'outQuad' }, { to: 1, duration: 620, ease: 'outElastic(1, .5)' }],
+      x: [{ to: '.5em', duration: 110, ease: 'outQuad' }, { to: '0em', duration: 620, ease: 'outElastic(1, .5)' }],
+    });
+    if (!loading) {
+      showSkeleton(false, index);
+      return;
+    }
+    utils.remove(bar);
+    animate(bar, { scaleX: 1, duration: 220, ease: 'outExpo', onComplete: () => showContent(index) });
+  }
+
   showSkeleton(true);
   disposer.listen(reload, 'click', () => {
     showSkeleton(false);
     animate(reload.firstChild, { rotate: [0, 360], duration: 700, ease: 'outQuart' });
   });
+  rows.forEach((rowEl, index) => disposer.listen(rowEl, 'click', () => press(index)));
   disposer.add(() => {
     waiting?.pause();
     sweep.pause();

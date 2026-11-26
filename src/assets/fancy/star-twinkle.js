@@ -8,7 +8,7 @@ export const meta = {
   category: 'fancy',
   libs: ['animejs'],
   description:
-    'パステルの夜空に、大小の星が左から順にまたたきます。いくつかの星は線で結ばれて星座になり、ときどき流れ星が弧を描いて落ちます。クリックした場所からも流れ星が出ます。寝かしつけの絵本、夜のイベントの告知、やさしい雰囲気の背景に使えます。',
+    'パステルの夜空に、大小の星が左から順にまたたきます。いくつかの星は線で結ばれて星座になり、ときどき流れ星が弧を描いて落ちます。クリックすると、その場所に願い星がひとつ灯り、光の輪が広がって、まわりの星が近い順にきらめきます。続いてそこから流れ星が弧を描いて飛び、落ちた先で小さな星くずが散ります。寝かしつけの絵本、夜のイベントの告知、やさしい雰囲気の背景に使えます。',
   params: {
     skyTop: { type: 'color', label: '空の上の色', default: '#4b3f8f' },
     skyBottom: { type: 'color', label: '空の下の色', default: '#f3a9c4' },
@@ -131,7 +131,7 @@ export function mount(container, options = {}) {
 
   // 流れ星。弧を描く線の、見える区間を先頭から後ろへ送る。
   function shoot(x, y) {
-    if (trails.childElementCount > 5) return;
+    if (trails.childElementCount > 40) return null;
     const sx = Number.isFinite(x) ? x : utils.random(140, 700);
     const sy = Number.isFinite(y) ? y : utils.random(30, 210);
     const dir = sx > W * 0.55 ? -1 : 1;
@@ -149,6 +149,72 @@ export function mount(container, options = {}) {
       ],
       onComplete: () => group.remove(),
     });
+    return { x: sx + dir * len, y: sy + len * 0.62 };
+  }
+
+  // 一時的に出す飾り。動き終わったら自分で消える。
+  function flashShape(shape, options) {
+    const holder = s('g', { transform: `translate(${options.x.toFixed(1)} ${options.y.toFixed(1)})` }, shape);
+    trails.appendChild(holder);
+    animate(shape, { ...options.motion, onComplete: () => holder.remove() });
+  }
+
+  // 願い星。準備: 押した場所に星が灯り、輪が広がる。山場: まわりの星が近い順にきらめき、流れ星が飛ぶ。余韻: 落ちた先で星くずが散る。
+  function wish(x, y) {
+    if (trails.childElementCount > 40) return;
+    flashShape(s('path', { class: 'ua-stw__c', d: SPARKLE, fill: '#fffbe6' }), {
+      x,
+      y,
+      motion: {
+        scale: [{ from: 0, to: 17, duration: 320, ease: 'outBack(3)' }, { to: 11, duration: 700, ease: 'inOutSine' }, { to: 0, duration: 420, ease: 'inBack(2)' }],
+        rotate: [0, 135],
+        duration: 1440,
+        ease: 'outQuad',
+      },
+    });
+    flashShape(s('circle', { class: 'ua-stw__c', r: 10, fill: 'none', stroke: '#fff6d6', 'stroke-width': 1.5 }), {
+      x,
+      y,
+      motion: { scale: [0.3, 24], opacity: [0.8, 0], duration: 1300, ease: 'outCubic' },
+    });
+    const nearby = starData
+      .map((d) => ({ d, distance: Math.hypot(d.x - x, d.y - y) }))
+      .filter((item) => item.distance < 250)
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, 16);
+    for (const { d, distance } of nearby) {
+      flashShape(s('path', { class: 'ua-stw__c', d: SPARKLE, fill: d.tint }), {
+        x: d.x,
+        y: d.y,
+        motion: {
+          scale: [{ from: 0, to: d.big ? d.size * 2 : 7, duration: 240, ease: 'outBack(3)' }, { to: 0, duration: 520, ease: 'inQuad' }],
+          rotate: [0, 90],
+          delay: 120 + distance * 4.2,
+        },
+      });
+    }
+    disposer.timeout(() => {
+      const end = shoot(x, y);
+      if (!end) return;
+      disposer.timeout(() => {
+        for (let i = 0; i < 7; i += 1) {
+          const angle = (i / 7) * Math.PI * 2 + Math.random();
+          const reach = utils.random(22, 60);
+          flashShape(s('path', { class: 'ua-stw__c', d: SPARKLE, fill: i % 2 ? '#fff6d6' : '#ffd9f0' }), {
+            x: end.x,
+            y: end.y,
+            motion: {
+              translateX: [0, Math.cos(angle) * reach],
+              translateY: [0, Math.sin(angle) * reach + 18],
+              scale: [{ from: 0, to: utils.random(3, 6), duration: 200, ease: 'outQuad' }, { to: 0, duration: 600, ease: 'inQuad' }],
+              rotate: [0, utils.random(-120, 120)],
+              delay: i * 25,
+              ease: 'outQuad',
+            },
+          });
+        }
+      }, 820);
+    }, 300);
   }
   disposer.timeout(() => shoot(), 1600);
   disposer.interval(() => shoot(), Math.max(1, p.preview ? Math.min(p.interval, 2.2) : p.interval) * 1000);
@@ -156,7 +222,7 @@ export function mount(container, options = {}) {
     const matrix = svg.getScreenCTM();
     if (!matrix) return;
     const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix.inverse());
-    shoot(point.x, point.y);
+    wish(point.x, point.y);
   });
 
   // ポインターに合わせて、奥の星と手前の星をずらす。

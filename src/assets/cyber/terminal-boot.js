@@ -1,4 +1,4 @@
-import { animate, createTimer, stagger, steps, utils } from 'animejs';
+import { animate, createTimeline, createTimer, stagger, steps, utils } from 'animejs';
 import { createDisposer, createRoot, h, injectStyle, prefersReducedMotion, removeRoot } from '../../lib/dom.js';
 import { resolveParams } from '../../lib/params.js';
 
@@ -8,7 +8,7 @@ export const meta = {
   category: 'cyber',
   libs: ['animejs'],
   description:
-    '起動ログが 1 行ずつ打ち出され、進捗の棒が伸び、右側の計器と記憶域の升目が順に点灯して、最後に待ち受け画面になります。待ち受けのあとは最初からくり返します。クリックすると、その場で再起動します。',
+    '起動ログが 1 行ずつ打ち出され、進捗の棒が伸び、右側の計器と記憶域の升目が順に点灯して、最後に待ち受け画面になります。待ち受けのあとは最初からくり返します。タップすると割り込みが入ります。起動が一時止まり、下から割り込みの欄がせり上がってコマンドが 1 文字ずつ打ち込まれ、結果の行が順に出て、計器の値と記憶域の升目がコマンドに応じて動いてから、起動の続きに戻ります。コマンドはタップのたびに記憶域の検査、送風、疎通の確認、再起動の順に変わります。',
   params: {
     host: { type: 'text', label: '端末の名前', default: 'KESTREL-7', maxLength: 12 },
     color: { type: 'color', label: '文字の色', default: '#ffb454' },
@@ -55,6 +55,11 @@ const CSS = `
 .ua-tb__scan{position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(to bottom,transparent 0 2px,rgba(0,0,0,.3) 2px 3px)}
 .ua-tb__sweep{position:absolute;left:0;right:0;top:-20%;height:20%;pointer-events:none;
   background:linear-gradient(to bottom,transparent,color-mix(in srgb,var(--ua-color) 9%,transparent),transparent)}
+.ua-tb__irq{position:absolute;left:0;right:0;bottom:0;padding:.7em .9em;display:grid;gap:.15em;white-space:pre;overflow:hidden;opacity:0;pointer-events:none;
+  background:color-mix(in srgb,var(--ua-bg) 92%,var(--ua-accent));border:1px solid var(--ua-accent);border-left-width:.35em;
+  box-shadow:0 0 1.6em color-mix(in srgb,var(--ua-accent) 30%,transparent)}
+.ua-tb__irq b{color:var(--ua-accent);font-weight:700;letter-spacing:.14em;text-shadow:0 0 .7em var(--ua-accent)}
+.ua-tb__irq i{font-style:normal;opacity:0}
 .ua-tb__flash{position:absolute;inset:0;pointer-events:none;background:var(--ua-color);opacity:0}
 `;
 
@@ -74,6 +79,13 @@ const METERS = [
   { label: 'MEM', value: 0.68 },
   { label: 'LINK', value: 0.91 },
   { label: 'TEMP', value: 0.57 },
+];
+// 割り込みで打ち込むコマンド。meter は動かす計器の番号、to はその行き先、cells は升目の見せ方。
+const COMMANDS = [
+  { cmd: 'memtest --quick', out: ['scanning 48 banks ........ done', '0 faults · 2 remapped'], meter: 1, to: 0.97, cells: 'sweep' },
+  { cmd: 'fan --max', out: ['fan 4200 rpm', 'thermal: sensor 3 falling'], meter: 3, to: 0.18, cells: 'none' },
+  { cmd: 'ping core', out: ['reply from core: 2 ms', 'reply from core: 2 ms'], meter: 2, to: 1, cells: 'blink' },
+  { cmd: 'reboot', out: ['sync ... ok', 'going down NOW'], meter: 0, to: 0.02, cells: 'drain', reboot: true },
 ];
 const CELLS = 48;
 const TYPE_MS = 430;
@@ -118,6 +130,10 @@ export function mount(container, options = {}) {
   });
   const cells = Array.from({ length: CELLS }, () => h('i', { class: 'ua-tb__cell' }));
   const flash = h('div', { class: 'ua-tb__flash' });
+  const irqHead = h('b', { text: '^C  -- INTERRUPT --' });
+  const irqCmd = h('span', { text: '' });
+  const irqOut = [h('i', { text: '' }), h('i', { text: '' })];
+  const irq = h('div', { class: 'ua-tb__irq' }, irqHead, irqCmd, irqOut);
   const sweep = h('div', { class: 'ua-tb__sweep' });
 
   root.append(
@@ -128,7 +144,7 @@ export function mount(container, options = {}) {
       h(
         'div',
         { class: 'ua-tb__body' },
-        h('div', { class: 'ua-tb__log' }, lines, idle),
+        h('div', { class: 'ua-tb__log' }, lines, idle, irq),
         h('div', { class: 'ua-tb__side' }, meters.map((m) => m.el), h('div', { class: 'ua-tb__map' }, cells)),
       ),
       h('div', { class: 'ua-tb__foot' }, h('span', { text: 'TTY1 · 0x3FA2 · 9600 8N1' }), clock),
@@ -149,7 +165,9 @@ export function mount(container, options = {}) {
       },
     });
   }
+  let mapLevel = 0;
   function setCells(k) {
+    mapLevel = k;
     const lit = Math.round(k * CELLS);
     cells.forEach((cell, i) => {
       cell.classList.toggle('is-on', i < lit);
@@ -233,6 +251,77 @@ export function mount(container, options = {}) {
     animate(flash, { opacity: [0.22, 0], duration: 380, ease: 'outQuad' });
   }
 
+  // 割り込み。起動が止まり、欄がせり上がる（準備）→ コマンドが打ち込まれ、結果の行と計器と升目が順に動く（山場）
+  // → 欄が下がり、起動の続きへ戻る（余韻）。
+  const typed = { n: 0 };
+  const scan = { n: 0 };
+  let held = false;
+  let irqTimeline = null;
+  let commandIndex = 0;
+  const prompt = compact ? '$ ' : 'operator$ ';
+  function interrupt() {
+    const command = COMMANDS[commandIndex % COMMANDS.length];
+    commandIndex += 1;
+    irqTimeline?.pause();
+    utils.remove([irq, typed, scan, ...irqOut]);
+    setCells(mapLevel);
+    held = true;
+    typed.n = 0;
+    scan.n = 0;
+    irqCmd.textContent = `${prompt}_`;
+    irqOut.forEach((line, i) => {
+      line.textContent = command.out[i];
+      line.style.opacity = '0';
+    });
+    phase.textContent = 'IRQ';
+    const before = mapLevel;
+    const typeMs = command.cmd.length * 38;
+    const ran = 420 + typeMs;
+    irqTimeline = createTimeline({
+      onComplete() {
+        held = false;
+        phase.textContent = cycle.idleShown ? 'READY' : 'BOOT';
+        if (command.reboot) restart();
+      },
+    })
+      .add(flash, { opacity: [0.16, 0], duration: 300, ease: 'outQuad' }, 0)
+      .add(irq, { opacity: [0, 1], translateY: ['110%', '0%'], duration: 320, ease: 'outBack(1.6)' }, 0)
+      .add(irqHead, { opacity: [0.2, 1], duration: 200, ease: steps(2), loop: 2 }, 0)
+      .add(typed, {
+        n: command.cmd.length,
+        duration: typeMs,
+        ease: 'linear',
+        onUpdate() {
+          const count = Math.round(typed.n);
+          irqCmd.textContent = prompt + command.cmd.slice(0, count) + (count < command.cmd.length ? '_' : '');
+        },
+      }, 360)
+      .add(irqOut, { opacity: [0, 1], translateX: ['-1em', 0], duration: 260, ease: 'outExpo', delay: stagger(260) }, ran + 80)
+      .call(() => setMeter(meters[command.meter], command.to, 900), ran + 80)
+      .add(scan, {
+        n: CELLS,
+        duration: 760,
+        ease: 'linear',
+        onUpdate() {
+          if (command.cells === 'none') return;
+          const head = Math.round(scan.n);
+          cells.forEach((cell, i) => {
+            if (command.cells === 'sweep') {
+              cell.classList.toggle('is-on', i <= head || i < Math.round(before * CELLS));
+              cell.classList.toggle('is-hot', Math.abs(i - head) < 3);
+            } else if (command.cells === 'blink') {
+              cell.classList.toggle('is-hot', (i + head) % 6 === 0);
+            } else {
+              cell.classList.toggle('is-on', i < Math.round(before * CELLS) - head);
+              cell.classList.remove('is-hot');
+            }
+          });
+        },
+      }, ran + 80)
+      .call(() => setCells(command.cells === 'sweep' ? 1 : command.cells === 'drain' ? 0 : before), ran + 860)
+      .add(irq, { opacity: 0, translateY: '110%', duration: 360, ease: 'inQuad' }, ran + 1500);
+  }
+
   cycle = buildCycle();
   animate(root.querySelector('.ua-tb__screen'), { opacity: [0, 1], scaleY: [0.02, 1], duration: 520, ease: 'outExpo' });
   animate(cursor, { opacity: [1, 0], duration: 520, ease: steps(1), loop: true, alternate: true });
@@ -244,7 +333,8 @@ export function mount(container, options = {}) {
       const now = performance.now();
       const dt = Math.min(120, now - last);
       last = now;
-      elapsed += dt * p.speed;
+      // 割り込みのあいだは、起動の時計を止める。
+      if (!held) elapsed += dt * p.speed;
       clock.textContent = formatClock(elapsed);
       for (const step of cycle.steps) {
         if (step.done || elapsed < step.start) continue;
@@ -260,19 +350,22 @@ export function mount(container, options = {}) {
       // 待ち受けの間は、計器の値を小さく揺らす。
       if (cycle.idleShown && elapsed > jitterAt) {
         jitterAt = elapsed + 520;
-        for (const meter of meters) setMeter(meter, Math.min(1, Math.max(0.05, meter.value + utils.random(-0.07, 0.07, 3))), 480);
+        for (const meter of held ? [] : meters) setMeter(meter, Math.min(1, Math.max(0.05, meter.value + utils.random(-0.07, 0.07, 3))), 480);
       }
       if (elapsed >= cycle.total) restart();
     },
   });
   disposer.add(() => timer.pause());
-  disposer.listen(root, 'click', restart);
+  disposer.add(() => irqTimeline?.pause());
+  disposer.listen(root, 'click', interrupt);
+  if (compact) disposer.interval(interrupt, 5200);
 
   return {
     restart,
+    interrupt,
     destroy() {
       disposer.run();
-      utils.remove(meters.map((m) => m.state));
+      utils.remove([irq, typed, scan, ...irqOut, ...meters.map((m) => m.state)]);
       removeRoot(root);
     },
   };

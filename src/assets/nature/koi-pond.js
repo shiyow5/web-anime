@@ -8,7 +8,7 @@ export const meta = {
   category: 'nature',
   libs: ['animejs'],
   description:
-    '上から見た池を、鯉が尾を左右に振りながらゆったり泳ぎます。体は背骨の節を順に追わせて描いているので、向きを変えるとしなやかに曲がります。通った跡には波紋が残り、ポインターを置くとその場所へ寄ってきます。クリックすると大きな波紋が立ち、鯉が勢いよく集まります。',
+    '上から見た池を、鯉が尾を左右に振りながらゆったり泳ぎます。体は背骨の節を順に追わせて描いているので、向きを変えるとしなやかに曲がります。通った跡には波紋が残り、ポインターを置くとその場所へ寄ってきます。クリックすると、その場所に餌がぱらぱらと落ちます。波紋が届いた鯉から順に向きを変えて集まり、粒をひとつずつ食べては水しぶきを立てます。波紋は岸で折り返し、蓮の葉が順に揺れます。',
   params: {
     count: { type: 'range', label: '鯉の数', min: 2, max: 10, step: 1, default: 6 },
     speed: { type: 'range', label: '泳ぐ速さ', min: 0.2, max: 3, step: 0.1, default: 1 },
@@ -81,6 +81,7 @@ export function mount(container, options = {}) {
   let height = 1;
   let unit = 1;
   let ripples = [];
+  let pellets = [];
   const pointer = { x: 0, y: 0, active: false, lastX: 0, lastY: 0 };
   const pads = (p.lilies ? PADS : []).map((pad, i) => ({ ...pad, scale: reduced ? 1 : 0, turn: i * 1.9 }));
 
@@ -97,6 +98,7 @@ export function mount(container, options = {}) {
       phase: Math.random() * 6,
       boost: 0,
       alpha: reduced ? 1 : 0,
+      alertAt: Infinity,
       wake: Math.random() * 0.5,
       coat,
       marks: Array.from({ length: 3 + (i % 2) }, (_, k) => ({
@@ -119,10 +121,65 @@ export function mount(container, options = {}) {
     }));
   }
 
-  function addRipple(x, y, size, strength, t) {
+  function addRipple(x, y, size, strength, t, rate = 0.085, life = 2.8) {
     if (p.ripples <= 0) return;
-    ripples.push({ x, y, size, strength, born: t });
-    if (ripples.length > 70) ripples = ripples.slice(-70);
+    ripples.push({ x, y, size, strength, born: t, rate, life });
+    if (ripples.length > 90) ripples = ripples.slice(-90);
+  }
+
+  // 餌を撒く。準備: 粒が時間差で落ちる。山場: 波紋が届いた鯉から集まって食べる。余韻: 波紋が岸で折り返し、蓮の葉が揺れる。
+  function feed(x, y, t) {
+    const rate = 0.2;
+    const life = 3.6;
+    addRipple(x, y, 1.5, 1, t, rate, life);
+    // 岸の向こうに鏡写しの波源を置く。輪が岸に届いた頃に、内側へ戻る弧として見える。
+    addRipple(-x, y, 1.5, 0.5, t, rate, life);
+    addRipple(2 * width - x, y, 1.5, 0.5, t, rate, life);
+    addRipple(x, -y, 1.5, 0.5, t, rate, life);
+    addRipple(x, 2 * height - y, 1.5, 0.5, t, rate, life);
+    const amount = 6;
+    const spin = Math.random() * Math.PI * 2;
+    for (let i = 0; i < amount; i += 1) {
+      const angle = spin + (i / amount) * Math.PI * 2 + Math.random() * 0.6;
+      const reach = unit * (0.03 + Math.random() * 0.09);
+      pellets.push({
+        x: clamp(x + Math.cos(angle) * reach, unit * 0.14, width - unit * 0.14),
+        y: clamp(y + Math.sin(angle) * reach, unit * 0.14, height - unit * 0.14),
+        land: t + 0.12 + i * 0.1,
+        landed: false,
+        eaten: false,
+      });
+    }
+    if (pellets.length > 30) pellets = pellets.slice(-30);
+    const speed = unit * 1.5 * rate;
+    for (const fish of fishes) {
+      // 波紋が届いた鯉から気づく。
+      fish.alertAt = Math.min(fish.alertAt, t + 0.2 + Math.hypot(fish.x - x, fish.y - y) / (speed * 2.2) + Math.random() * 0.25);
+    }
+    for (const pad of pads) {
+      const delay = (Math.hypot(pad.x * width - x, pad.y * height - y) / speed) * 1000;
+      animate(pad, {
+        scale: [
+          { to: 1.09, duration: 260, ease: 'outQuad' },
+          { to: 1, duration: 1200, ease: 'outElastic(1, .35)' },
+        ],
+        delay,
+      });
+    }
+  }
+
+  function nearestPellet(fish) {
+    let best = null;
+    let bestDistance = Infinity;
+    for (const pellet of pellets) {
+      if (!pellet.landed || pellet.eaten) continue;
+      const d = Math.hypot(pellet.x - fish.x, pellet.y - fish.y);
+      if (d < bestDistance) {
+        bestDistance = d;
+        best = pellet;
+      }
+    }
+    return best ? { pellet: best, distance: bestDistance } : null;
   }
 
   function step(dt, t) {
@@ -131,9 +188,25 @@ export function mount(container, options = {}) {
       : p.preview
         ? { x: width * (0.5 + Math.sin(t * 0.45) * 0.3), y: height * (0.5 + Math.sin(t * 0.7 + 1) * 0.26) }
         : null;
+    for (const pellet of pellets) {
+      if (!pellet.landed && t >= pellet.land) {
+        pellet.landed = true;
+        addRipple(pellet.x, pellet.y, 0.45, 0.8, t);
+      }
+    }
     for (const fish of fishes) {
       let turn = Math.sin(t * 0.5 + fish.seed) * 0.5 + Math.sin(t * 0.23 + fish.seed * 0.5) * 0.3;
-      if (target) {
+      const food = t >= fish.alertAt ? nearestPellet(fish) : null;
+      if (food) {
+        // 餌に気づいた鯉は、いちばん近い粒へ急ぐ。口が届いたら食べて、水しぶきを立てる。
+        turn += clamp(wrapAngle(Math.atan2(food.pellet.y - fish.y, food.pellet.x - fish.x) - fish.angle) * 4.5, -4.2, 4.2);
+        fish.boost = food.distance > unit * 0.14 ? Math.max(fish.boost, 1.7) : 0.25;
+        if (food.distance < unit * 0.05) {
+          food.pellet.eaten = true;
+          fish.boost = 1.1;
+          addRipple(food.pellet.x, food.pellet.y, 0.7, 0.9, t);
+        }
+      } else if (target) {
         const dx = target.x - fish.x;
         const dy = target.y - fish.y;
         if (Math.hypot(dx, dy) > unit * 0.11) turn += clamp(wrapAngle(Math.atan2(dy, dx) - fish.angle) * 2.2, -2.2, 2.2) * fish.curiosity;
@@ -170,8 +243,9 @@ export function mount(container, options = {}) {
         addRipple(tail.x, tail.y, 0.5 * fish.size, 0.55, t);
       }
     }
-    const life = 2.8;
-    ripples = ripples.filter((ripple) => t - ripple.born < life);
+    ripples = ripples.filter((ripple) => t - ripple.born < ripple.life);
+    pellets = pellets.filter((pellet) => !pellet.eaten);
+    if (pellets.length === 0) for (const fish of fishes) fish.alertAt = Infinity;
   }
 
   // 尾を振った分だけ横へずらした、描画用の背骨を作る。
@@ -352,15 +426,37 @@ export function mount(container, options = {}) {
     ctx.lineWidth = 1.3;
     for (const ripple of ripples) {
       const age = t - ripple.born;
-      const fade = Math.pow(1 - age / 2.8, 1.6) * ripple.strength * p.ripples;
+      const fade = Math.pow(1 - age / ripple.life, 1.6) * ripple.strength * p.ripples;
       for (let ring = 0; ring < 3; ring += 1) {
-        const radius = unit * ripple.size * (0.03 + age * 0.085) - ring * unit * 0.022 * ripple.size;
+        const radius = unit * ripple.size * (0.03 + age * ripple.rate) - ring * unit * 0.022 * ripple.size;
         if (radius <= 0) continue;
         ctx.strokeStyle = `rgba(225,255,245,${(fade * (0.6 - ring * 0.17)).toFixed(3)})`;
         ctx.beginPath();
         ctx.arc(ripple.x, ripple.y, radius, 0, Math.PI * 2);
         ctx.stroke();
       }
+    }
+    // 餌の粒。落ちてくる間は影が小さく濃くなり、水面に着くと粒が浮かぶ。
+    for (const pellet of pellets) {
+      const until = pellet.land - t;
+      if (until > 0.3) continue;
+      if (!pellet.landed) {
+        const k = 1 - until / 0.3;
+        ctx.fillStyle = `rgba(0,25,25,${(0.1 + k * 0.25).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(pellet.x, pellet.y, unit * (0.022 - k * 0.012), 0, Math.PI * 2);
+        ctx.fill();
+        continue;
+      }
+      const bob = Math.sin(t * 5 + pellet.x) * unit * 0.0015;
+      ctx.fillStyle = '#c98a3c';
+      ctx.beginPath();
+      ctx.arc(pellet.x, pellet.y + bob, unit * 0.009, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,236,190,0.9)';
+      ctx.beginPath();
+      ctx.arc(pellet.x - unit * 0.003, pellet.y + bob - unit * 0.003, unit * 0.0035, 0, Math.PI * 2);
+      ctx.fill();
     }
     for (const pad of pads) drawPad(pad, t);
     const edge = ctx.createRadialGradient(width / 2, height / 2, unit * 0.35, width / 2, height / 2, Math.hypot(width, height) * 0.6);
@@ -470,9 +566,10 @@ export function mount(container, options = {}) {
       pointer.x = at.px;
       pointer.y = at.py;
       pointer.active = true;
-      addRipple(at.px, at.py, 1.5, 1, now());
-      for (const fish of fishes) fish.boost = 1.6;
+      feed(at.px, at.py, now());
     });
+    // 一覧では、数秒おきに場所を変えて餌を撒く。
+    if (p.preview) disposer.interval(() => feed(width * (0.3 + Math.random() * 0.4), height * (0.3 + Math.random() * 0.4), now()), 6500);
   }
 
   return {

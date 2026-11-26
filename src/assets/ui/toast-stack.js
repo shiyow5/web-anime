@@ -8,7 +8,7 @@ export const meta = {
   category: 'ui',
   libs: ['animejs'],
   description:
-    '通知が横からばねの動きで入ってきて積み重なり、時間がたつと抜けて、残りが詰まります。成功・注意・失敗の 3 種類があり、乗せている間は消えません。戻り値の push(種類, 文) で、保存の完了や通信の失敗を知らせる場面に使います。',
+    '通知が横からばねの動きで入ってきて積み重なり、時間がたつと抜けて、残りが詰まります。ボタンを押すと、色の点が輪を放って通知が届き、先にあった通知が衝撃で順に押されます。成功はチェックの線を書き、注意は印が鈴のように振れ、失敗は文が首を振ります。閉じるときは、少し引いてから傾いて抜けます。成功・注意・失敗の 3 種類があり、乗せている間は消えません。戻り値の push(種類, 文) で、保存の完了や通信の失敗を知らせる場面に使います。',
   params: {
     position: {
       type: 'select',
@@ -101,7 +101,16 @@ export function mount(container, options = {}) {
   const stack = h('div', { class: `ua-ts__stack ua-ts__stack--${p.position}`, role: 'status', 'aria-live': 'polite' });
   const fires = ORDER.map((type) => {
     const button = h('button', { class: 'ua-ts__fire', type: 'button', style: { '--c': TYPES[type].color } }, h('i'), TYPES[type].label);
-    disposer.listen(button, 'click', () => push(type));
+    disposer.listen(button, 'click', () => {
+      // 押したボタンの色の点がふくらんで輪を放ち、通知を送り出した手応えを出す。
+      if (!reduced) {
+        const dot = button.firstChild;
+        utils.remove([button, dot]);
+        animate(button, { scale: [{ to: 0.95, duration: 90, ease: 'outQuad' }, { to: 1, duration: 500, ease: 'outElastic(1, .5)' }], x: [{ to: 6, duration: 120, ease: 'outQuad' }, { to: 0, duration: 500, ease: 'outElastic(1, .5)' }] });
+        animate(dot, { scale: [{ to: 1.9, duration: 120, ease: 'outQuad' }, { to: 1, duration: 600, ease: 'outElastic(1, .4)' }], boxShadow: [{ from: `0 0 0 0 ${TYPES[type].color}`, to: `0 0 0 .9em ${TYPES[type].color}00`, duration: 620, ease: 'outQuad' }] });
+      }
+      push(type);
+    });
     return button;
   });
   const panel = h('div', { class: 'ua-ts__panel' }, h('h2', { text: '通知の見本' }), h('p', { text: 'ボタンを押すと、右に通知が積み重なります。' }), fires);
@@ -121,6 +130,7 @@ export function mount(container, options = {}) {
       .forEach((item, i) => {
         const y = fromTop ? offset : -offset;
         offset += item.el.offsetHeight + gap;
+        item.y = y;
         if (item === fresh || reduced) utils.set(item.el, { y });
         else animate(item.el, { y, ease: settle, delay: delay + i * 40 });
       });
@@ -135,8 +145,16 @@ export function mount(container, options = {}) {
       items = items.filter((other) => other !== item);
     };
     if (reduced) drop();
-    else animate(item.el, { x: '118%', opacity: 0, scale: 0.94, duration: 340, ease: 'inQuart', onComplete: drop });
-    layout(null, 140);
+    else {
+      // 少し左へ引いてためてから、傾きながら右へ抜ける。
+      animate(item.el, {
+        x: [{ to: '-5%', duration: 150, ease: 'outQuad' }, { to: '122%', duration: 320, ease: 'inQuart' }],
+        rotate: [{ to: -1.5, duration: 150 }, { to: 5, duration: 320, ease: 'inQuad' }],
+        opacity: [{ to: 1, duration: 300 }, { to: 0, duration: 170 }],
+        onComplete: drop,
+      });
+    }
+    layout(null, 300);
   }
 
   function push(type, text) {
@@ -145,12 +163,13 @@ export function mount(container, options = {}) {
     const spec = TYPES[kind];
     const [title, sample] = spec.samples[count % spec.samples.length];
     count += 1;
-    const icon = h('span', { class: 'ua-ts__icon', 'aria-hidden': 'true' }, s('svg', { viewBox: '0 0 24 24' }, s('path', { d: spec.icon })));
+    const mark = s('path', { d: spec.icon, pathLength: 1 });
+    const icon = h('span', { class: 'ua-ts__icon', 'aria-hidden': 'true' }, s('svg', { viewBox: '0 0 24 24' }, mark));
     const close = h('button', { class: 'ua-ts__close', type: 'button', 'aria-label': '通知を閉じる' }, s('svg', { viewBox: '0 0 24 24' }, s('path', { d: 'M6 6l12 12M18 6L6 18' })));
     const lifeBar = h('i', { class: 'ua-ts__life' });
     const message = typeof text === 'string' && text.trim() ? text.slice(0, 80) : sample;
     const el = h('div', { class: 'ua-ts__toast', style: { '--c': spec.color } }, icon, h('div', { class: 'ua-ts__body' }, h('b', { text: title }), h('span', { text: message })), close, lifeBar);
-    const item = { el, leaving: false, life: null };
+    const item = { el, leaving: false, life: null, y: 0 };
     stack.appendChild(el);
     items.push(item);
     close.addEventListener('click', () => dismiss(item));
@@ -164,7 +183,24 @@ export function mount(container, options = {}) {
     }
 
     animate(el, { x: ['118%', '0%'], opacity: [0, 1], ease: enter });
-    animate(icon, { scale: [0, 1], rotate: [-60, 0], duration: 620, delay: 160, ease: 'outBack(2.4)' });
+    // 新しい通知が着いた衝撃で、先にあった通知が近い順に押されて戻る。
+    const others = alive.filter((other) => other !== item && !other.leaving).reverse();
+    others.forEach((other, i) => {
+      const hit = 9 / (i + 1);
+      animate(other.el, { x: [{ to: -hit, duration: 110, ease: 'outQuad' }, { to: 0, duration: 620, ease: 'outElastic(1, .4)' }], delay: 210 + i * 55 });
+    });
+    // 種類ごとの印の動き。成功はチェックを書き、注意は鈴のように振れ、失敗は通知ごと首を振る。
+    mark.style.strokeDasharray = '1';
+    animate(icon, { scale: [0, 1], duration: 520, delay: 160, ease: 'outBack(2.4)' });
+    animate(mark, { strokeDashoffset: [1, 0], duration: kind === 'success' ? 520 : 300, delay: 330, ease: 'outQuart' });
+    if (kind === 'warning') {
+      animate(icon, { rotate: [{ to: 24, duration: 110 }, { to: -19, duration: 150 }, { to: 13, duration: 150 }, { to: -7, duration: 150 }, { to: 0, duration: 200 }], delay: 480, ease: 'inOutSine' });
+    } else if (kind === 'error') {
+      animate(el.querySelector('.ua-ts__body'), { x: [{ to: -7, duration: 60 }, { to: 6, duration: 80 }, { to: -4, duration: 80 }, { to: 3, duration: 80 }, { to: 0, duration: 120 }], delay: 520, ease: 'inOutSine' });
+      animate(icon, { rotate: [{ from: -90, to: 0, duration: 420, ease: 'outBack(3)' }], delay: 300 });
+    } else {
+      animate(icon, { boxShadow: [{ from: `0 0 0 0 ${spec.color}`, to: `0 0 0 .7em ${spec.color}00`, duration: 700, ease: 'outQuad' }], delay: 620 });
+    }
     item.life = animate(lifeBar, { scaleX: [1, 0], duration: p.life * 1000, ease: 'linear', onComplete: () => dismiss(item) });
     if (hovering) item.life.pause();
     return item.el;

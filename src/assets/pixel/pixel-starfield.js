@@ -8,7 +8,7 @@ export const meta = {
   category: 'pixel',
   libs: ['animejs'],
   description:
-    '奥行きの違う 3 層の星が瞬きながら流れ、縞模様の惑星がゆっくり自転し、ときどき流れ星が横切ります。ポインターを動かすと層がずれて奥行きが見え、クリックした場所から流れ星が出ます。ゲームのタイトル画面や宇宙の場面の背景に使えます。',
+    '奥行きの違う 3 層の星が瞬きながら流れ、縞模様の惑星がゆっくり自転し、ときどき流れ星が横切ります。ポインターを動かすと層がずれて奥行きが見え、クリックすると、押した場所を中心に星が外へ尾を引いて伸び、ワープに入ったようになります。いちばん伸びたところで空が光って、その場所から流れ星が飛び出し、星の尾はゆっくり縮んで元の星空に戻ります。ゲームのタイトル画面や宇宙の場面の背景に使えます。',
   params: {
     density: { type: 'range', label: '星の数', min: 0.3, max: 2, step: 0.1, default: 1 },
     speed: { type: 'range', label: '流れる速さ', min: 0, max: 3, step: 0.1, default: 1 },
@@ -126,7 +126,8 @@ export function mount(container, options = {}) {
   const ringColors = [mix(p.planet, '#ffffff', 0.55), mix(p.planet, '#ffffff', 0.2)];
   const nebulaColors = [mix(p.background, '#5a2a9a', 0.32), mix(p.background, '#2a6ab0', 0.4)];
   const starColors = STAR_LAYERS.map((layer) => STAR_COLORS.map((color) => mix(color, p.background, layer.dim)));
-  const state = { intro: reduced ? 1 : 0, shiftX: 0, shiftY: 0, flash: 0 };
+  const state = { intro: reduced ? 1 : 0, shiftX: 0, shiftY: 0, flash: 0, warp: 0 };
+  const warpAt = { x: 0, y: 0 };
   const pointer = { x: 0, y: 0 };
   let nebula = null;
   let meteors = [];
@@ -146,6 +147,14 @@ export function mount(container, options = {}) {
         if (twinkle < -0.7) continue;
         ctx.fillStyle = starColors[li][Math.floor(hash(key + 5) * STAR_COLORS.length)];
         ctx.fillRect(x, y, 1, 1);
+        if (state.warp > 0.03) {
+          // ワープ。押した場所から遠い星ほど、手前の層ほど、長い尾を引く。
+          const dx = x - warpAt.x;
+          const dy = y - warpAt.y;
+          const d = Math.hypot(dx, dy) || 1;
+          const len = Math.round(state.warp * (2 + li * 3) * (0.4 + (d / w) * 2.4));
+          for (let k = 1; k <= len; k += 1) ctx.fillRect(Math.round(x + (dx / d) * k), Math.round(y + (dy / d) * k), 1, 1);
+        }
         if (li === 2 && twinkle > 0.5) {
           ctx.fillRect(x - 1, y, 3, 1);
           ctx.fillRect(x, y - 1, 1, 3);
@@ -298,7 +307,17 @@ export function mount(container, options = {}) {
   });
   disposer.listen(root, 'pointerdown', (event) => {
     const { px, py } = localPointer(event, root);
-    shoot(px, py);
+    if (destroyed || reduced || view.scale <= 0) return;
+    warpAt.x = px / view.scale;
+    warpAt.y = py / view.scale;
+    // 準備: 星が尾を引き始める。山場: 伸びきって流れ星が飛び出す。余韻: 尾がゆっくり縮む。
+    animate(state, {
+      warp: [
+        { to: 1, duration: 420, ease: 'inQuad' },
+        { to: 0, duration: 1300, ease: 'outCubic' },
+      ],
+    });
+    disposer.timeout(() => shoot(px, py), 400);
   });
 
   return {

@@ -8,7 +8,7 @@ export const meta = {
   category: 'nature',
   libs: ['animejs'],
   description:
-    '水平線から手前へ、何層もの波が重なって寄せてきます。波頭は白く光り、太陽や月の光が海面にちらつきます。ポインターを動かすと層がずれて奥行きが見え、クリックすると大きなうねりが奥から手前へ伝わります。時刻は朝・昼・夕・夜から選べます。',
+    '水平線から手前へ、何層もの波が重なって寄せてきます。波頭は白く光り、太陽や月の光が海面にちらつきます。ポインターを動かすと層がずれて奥行きが見え、クリックすると、まず潮が引き、押した場所を中心に盛り上がったうねりが奥から手前へ広がりながら伝わります。押した場所からは魚が弧を描いて跳ね、しぶきを上げて海へ戻ります。時刻は朝・昼・夕・夜から選べます。',
   params: {
     time: {
       type: 'select',
@@ -81,7 +81,7 @@ export function mount(container, options = {}) {
   });
   const stars = Array.from({ length: 70 }, (_, i) => ({ x: hash(i * 3 + 1), y: hash(i * 3 + 2), r: 0.5 + hash(i * 3 + 3) * 1.1 }));
   const clouds = Array.from({ length: 5 }, (_, i) => ({ x: hash(i + 40), y: 0.35 + hash(i + 50) * 0.5, w: 0.12 + hash(i + 60) * 0.2 }));
-  const state = { sun: reduced ? 0 : 1, pointer: 0, pointerTarget: 0 };
+  const state = { sun: reduced ? 0 : 1, pointer: 0, pointerTarget: 0, tapX: 0.5, tapY: 0.7, jump: 0, side: 1 };
   let width = 1;
   let height = 1;
 
@@ -140,15 +140,18 @@ export function mount(container, options = {}) {
     const amp = (2.5 + 26 * depth * depth) * p.height * Math.max(0.5, height / 520);
     const length = (46 + 300 * depth) * scale;
     const offset = layer.phase + layer.direction * t * (10 + 54 * depth) + state.pointer * 46 * depth;
-    const base =
-      horizon + sea * Math.pow(depth, 1.4) * 0.86 + 3 + Math.sin(t * 0.55 + index * 0.9) * amp * 0.28 - layer.swell * amp * 1.5 + layer.rise * (sea + 40);
+    const base = horizon + sea * Math.pow(depth, 1.4) * 0.86 + 3 + Math.sin(t * 0.55 + index * 0.9) * amp * 0.28 + layer.rise * (sea + 40);
+    // うねりは押した場所でいちばん高く、手前の層ほど横に広がる。
+    const spread = width * (0.16 + 0.34 * depth);
+    const tapX = state.tapX * width;
     const step = p.preview ? 6 : 7;
     const points = [];
     for (let x = -step; x <= width + step; x += step) {
       const a = ((x + offset) / length) * Math.PI * 2;
       // とがった波頭になるように、正弦波を持ち上げてべき乗する。
       const crest = Math.pow(0.5 + 0.5 * Math.sin(a), 2.1);
-      const y = base - amp * (crest * 1.5 - 0.4 + 0.25 * Math.sin(a * 0.37 + index));
+      const bump = layer.swell === 0 ? 0 : layer.swell * (0.5 + 1.5 * Math.exp(-(((x - tapX) / spread) ** 2)));
+      const y = base - amp * (crest * 1.5 - 0.4 + 0.25 * Math.sin(a * 0.37 + index)) - bump * amp * 1.5;
       points.push({ x, y, crest, key: Math.round((x + offset) / step) });
     }
 
@@ -217,6 +220,57 @@ export function mount(container, options = {}) {
     ctx.globalAlpha = 1;
   }
 
+  // 跳ねる魚。弧に沿って向きを変え、飛び出すときと戻るときにしぶきを上げる。
+  function drawFish(horizon) {
+    const k = state.jump;
+    if (k <= 0 || k >= 1) return;
+    const size = Math.max(14, Math.min(width, height) * 0.05) * (0.6 + 0.6 * state.tapY);
+    const baseY = Math.max(horizon + size, state.tapY * height);
+    const reach = size * 4.2;
+    const lift = size * 4.6;
+    const x = state.tapX * width + state.side * (k - 0.5) * reach;
+    const y = baseY - Math.sin(Math.PI * k) * lift;
+    const angle = Math.atan2(-Math.cos(Math.PI * k) * Math.PI * lift, state.side * reach);
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.fillStyle = mix(pal.near, '#05101c', 0.55);
+    ctx.beginPath();
+    ctx.moveTo(size, 0);
+    ctx.quadraticCurveTo(size * 0.3, -size * 0.42, -size * 0.7, -size * 0.06);
+    ctx.lineTo(-size * 1.15, -size * 0.36);
+    ctx.lineTo(-size * 1.0, 0);
+    ctx.lineTo(-size * 1.15, size * 0.36);
+    ctx.lineTo(-size * 0.7, size * 0.06);
+    ctx.quadraticCurveTo(size * 0.3, size * 0.36, size, 0);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(size * 0.1, -size * 0.28);
+    ctx.lineTo(-size * 0.25, -size * 0.62);
+    ctx.lineTo(-size * 0.3, -size * 0.2);
+    ctx.fill();
+    ctx.strokeStyle = rgba(pal.foam, 0.55);
+    ctx.lineWidth = Math.max(1, size * 0.05);
+    ctx.beginPath();
+    ctx.moveTo(size * 0.8, -size * 0.06);
+    ctx.quadraticCurveTo(size * 0.2, -size * 0.3, -size * 0.6, -size * 0.07);
+    ctx.stroke();
+    ctx.restore();
+    // しぶき。飛び出した場所と、戻る場所に扇の形で散る。
+    for (const [at, from] of [[k / 0.3, -0.5], [(k - 0.78) / 0.22, 0.5]]) {
+      if (at <= 0 || at >= 1) continue;
+      const sx = state.tapX * width + state.side * from * reach;
+      ctx.fillStyle = rgba(pal.foam, (1 - at) * 0.9);
+      for (let i = 0; i < 9; i += 1) {
+        const a = -Math.PI / 2 + (i - 4) * 0.2;
+        const d = size * (0.5 + 1.5 * at) * (0.7 + hash(i + 70) * 0.6);
+        ctx.beginPath();
+        ctx.arc(sx + Math.cos(a) * d, baseY + Math.sin(a) * d + at * at * size * 1.2, Math.max(1, size * 0.07 * (1 - at * 0.5)), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
   function draw(t) {
     ctx.clearRect(0, 0, width, height);
     const { sunX, horizon } = drawSky(t);
@@ -229,7 +283,14 @@ export function mount(container, options = {}) {
     haze.addColorStop(1, rgba(pal.bottom, 0));
     ctx.fillStyle = haze;
     ctx.fillRect(0, horizon - 10, width, 32);
-    layers.forEach((layer, index) => drawLayer(layer, index, t, sunX, horizon));
+    // 魚は、押した高さより手前の層に隠れるように、その層の前に描く。
+    const sea = height - horizon;
+    const fishLayer = layers.findIndex((layer) => horizon + sea * Math.pow(layer.depth, 1.4) * 0.86 > state.tapY * height);
+    layers.forEach((layer, index) => {
+      if (index === fishLayer) drawFish(horizon);
+      drawLayer(layer, index, t, sunX, horizon);
+    });
+    if (fishLayer < 0) drawFish(horizon);
     const shade = ctx.createLinearGradient(0, height * 0.7, 0, height);
     shade.addColorStop(0, 'rgba(0,0,0,0)');
     shade.addColorStop(1, 'rgba(0,0,10,0.3)');
@@ -256,15 +317,23 @@ export function mount(container, options = {}) {
   resize();
 
   // クリックで、うねりが奥から手前へ順に伝わる。
-  function swell() {
+  // 準備: 潮が引く。山場: 押した場所を中心にうねりが盛り上がり、魚が跳ねる。余韻: 引き波のあと静まる。
+  function swell(event) {
     if (reduced) return;
+    const at = event && Number.isFinite(event.clientX) ? localPointer(event, root) : { x: 0.25 + Math.random() * 0.5, y: 0.6 + Math.random() * 0.25 };
+    state.tapX = at.x;
+    state.tapY = Math.max(HORIZON + 0.08, at.y);
+    state.side = at.x > 0.5 ? -1 : 1;
     animate(layers, {
       swell: [
+        { to: -0.3, duration: 260, ease: 'outQuad' },
         { to: 1, duration: 420, ease: 'outQuad' },
-        { to: 0, duration: 1300, ease: 'inOutSine' },
+        { to: -0.18, duration: 900, ease: 'inOutSine' },
+        { to: 0, duration: 800, ease: 'inOutSine' },
       ],
       delay: stagger(110),
     });
+    animate(state, { jump: [0, 1], duration: 1150, delay: 380, ease: 'linear' });
   }
 
   if (!reduced) {
@@ -285,7 +354,7 @@ export function mount(container, options = {}) {
       state.pointerTarget = 0;
     });
     disposer.listen(root, 'pointerdown', swell);
-    if (p.preview) disposer.interval(swell, 5200);
+    if (p.preview) disposer.interval(() => swell(), 5200);
   }
 
   return {

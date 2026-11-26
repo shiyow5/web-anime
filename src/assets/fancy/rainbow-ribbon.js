@@ -9,7 +9,7 @@ export const meta = {
   category: 'fancy',
   libs: ['three', 'animejs'],
   description:
-    '6 色の帯でできたリボンが、ポインターのあとをなめらかにうねって追いかけます。触らないあいだは、8 の字などを自動で描き続けます。クリックするとリボンがふくらんで、星の粒が散ります。お祝いのページや、子ども向けサービスの背景に使えます。',
+    '6 色の帯でできたリボンが、ポインターのあとをなめらかにうねって追いかけます。触らないあいだは、8 の字などを自動で描き続けます。クリックすると、リボンの先がその場所へ飛んで、8 の字を 2 回描いて蝶結びを結びます。ふくらみが先から尾へ走り抜け、通った順に星の粒がこぼれます。お祝いのページや、子ども向けサービスの背景に使えます。',
   params: {
     palette: {
       type: 'select',
@@ -182,7 +182,9 @@ export function mount(container, options = {}) {
   const head = new THREE.Vector2();
   const target = new THREE.Vector2();
   const scratch = new THREE.Vector2();
-  const state = { reveal: stage.reduced ? 1 : 0, pulse: 0 };
+  const state = { reveal: stage.reduced ? 1 : 0, pulse: 0, bow: 0, run: -1 };
+  const bowAt = new THREE.Vector2();
+  let ranTo = 0;
   let autoTime = 2.2;
   let sampleClock = 0;
   let sparkClock = 0;
@@ -215,7 +217,9 @@ export function mount(container, options = {}) {
       }
       const u = i / (N - 1);
       const taper = Math.sqrt(Math.min(1, u / 0.035)) * (1 - u) ** 0.55;
-      const w = half * taper * (0.62 + 0.38 * Math.cos(u * 7 - time * 2.2));
+      // 先から尾へ走るふくらみ。
+      const bulge = state.run >= 0 ? 1 + 1.5 * Math.exp(-(((u - state.run) / 0.06) ** 2)) : 1;
+      const w = half * taper * (0.62 + 0.38 * Math.cos(u * 7 - time * 2.2)) * bulge;
       const wave = Math.sin(u * 9 - time * 3.2) * 0.07 * view.unit * u;
       const cx = history[i * 2] + nx * wave;
       const cy = history[i * 2 + 1] + ny * wave;
@@ -243,9 +247,22 @@ export function mount(container, options = {}) {
       autoTime += dt * 1.6 * p.speed;
       autoPoint(p.pattern, autoTime, view, target);
     }
+    const tying = state.bow > 0 && state.bow < 1;
+    if (tying) {
+      // 蝶結び。押した場所を中心に、8 の字を 2 回なぞる。始めと終わりは輪を小さくする。
+      const a = state.bow * Math.PI * 4;
+      const r = view.unit * 1.45 * Math.sin(Math.PI * state.bow) ** 0.5;
+      target.set(bowAt.x + r * Math.sin(a), bowAt.y + r * Math.sin(a) * Math.cos(a) * 0.9);
+    }
     const prevX = head.x;
     const prevY = head.y;
-    head.lerp(target, 1 - Math.exp(-dt * (following ? 9 : 14)));
+    head.lerp(target, 1 - Math.exp(-dt * (tying ? 16 : following ? 9 : 14)));
+    // ふくらみが通った所から、星の粒を順にこぼす。
+    if (p.sparkle && state.run >= 0 && state.run < 1) {
+      const upTo = Math.floor(state.run * (N - 1));
+      for (let j = ranTo; j < upTo; j += 3) emit(history[j * 2], history[j * 2 + 1], view.unit * (0.7 + Math.random() * 1.3));
+      ranTo = Math.max(ranTo, upTo);
+    }
 
     sampleClock += dt;
     let steps = Math.min(N, Math.floor(sampleClock / sampleStep));
@@ -285,22 +302,26 @@ export function mount(container, options = {}) {
 
   if (!stage.reduced) animate(state, { reveal: [0, 1], delay: 150, ease: spring({ stiffness: 90, damping: 9 }) });
 
-  function puff() {
+  function puff(event) {
     if (stage.reduced) return;
+    const rect = event && Number.isFinite(event.clientX) ? container.getBoundingClientRect() : null;
+    if (rect && rect.width && rect.height) {
+      bowAt.set(((event.clientX - rect.left) / rect.width - 0.5) * view.width, (0.5 - (event.clientY - rect.top) / rect.height) * view.height);
+    } else bowAt.set((Math.random() - 0.5) * view.width * 0.5, (Math.random() - 0.5) * view.height * 0.4);
+    ranTo = 0;
+    // 準備: 先が押した場所へ飛ぶ。山場: 蝶結びを結び、ふくらみが走る。余韻: 太さが揺れて戻る。
+    animate(state, { bow: [0.001, 1], duration: 1900, ease: 'linear' });
+    animate(state, { run: [0, 1], duration: 1200, delay: 350, ease: 'inOutSine', onComplete: () => { state.run = -1; } });
     animate(state, {
       pulse: [
-        { to: 1, duration: 140, ease: 'outQuad' },
+        { to: 0.45, duration: 140, ease: 'outQuad' },
         { to: 0, duration: 1100, ease: 'outElastic(1, .4)' },
       ],
+      delay: 1850,
     });
-    if (!p.sparkle) return;
-    for (let i = 0; i < 22; i += 1) {
-      const j = Math.floor(Math.random() * 50);
-      emit(history[j * 2], history[j * 2 + 1], view.unit * (0.8 + Math.random() * 1.6));
-    }
   }
   container.addEventListener('click', puff);
-  const autoPuff = p.preview ? setInterval(puff, 3200) : 0;
+  const autoPuff = p.preview ? setInterval(() => puff(), 4200) : 0;
 
   return {
     puff,

@@ -9,7 +9,7 @@ export const meta = {
   category: 'ascii',
   libs: ['three', 'animejs'],
   description:
-    'three.js で回している立体を画面には出さず、その明るさを 1 升ずつ読み取って文字に置き換えます。結び目や多面体に光が当たる様子が、文字の濃淡だけで浮かび上がります。まわりを小さな立体が別の色で回り、ポインターを動かすと全体が傾きます。3D の作品紹介や技術系の見出しに使えます。',
+    'three.js で回している立体を画面には出さず、その明るさを 1 升ずつ読み取って文字に置き換えます。結び目や多面体に光が当たる様子が、文字の濃淡だけで浮かび上がります。まわりを小さな立体が別の色で回り、ポインターを動かすと全体が傾きます。クリックすると、立体がいったん縮んでから大きく弾んで勢いよく回り、まわりの小さな立体は 1 つずつ順に外の軌道へはじき飛ばされて、らせんを描きながら戻ってきます。3D の作品紹介や技術系の見出しに使えます。',
   params: {
     shape: {
       type: 'select',
@@ -140,13 +140,43 @@ export function mount(container, options = {}) {
   const moons = Array.from({ length: Math.round(p.satellites) }, (_, i) => {
     const mesh = new THREE.Mesh(moonGeometry, moonMaterial);
     group.add(mesh);
-    return { mesh, phase: (i / Math.max(1, Math.round(p.satellites))) * Math.PI * 2, radius: 2.05 + (i % 2) * 0.22 };
+    return { mesh, phase: (i / Math.max(1, Math.round(p.satellites))) * Math.PI * 2, radius: 2.05 + (i % 2) * 0.22, fling: 0 };
   });
   scene.add(group);
 
   const ptr = { x: 0.5, y: 0.5, sx: 0.5, sy: 0.5, inside: false };
   const intro = { v: reduced ? 1 : 0 };
   let time = reduced ? 2.4 : 0;
+  const fx = { pop: 0, spin: 0 };
+  let whirl = 0;
+
+  // はじく。準備: 立体が縮む。山場: 弾んで勢いよく回り、小さな立体が順に外へ飛ぶ。余韻: らせんで戻る。
+  function burst() {
+    if (reduced) return;
+    animate(fx, {
+      pop: [
+        { to: -0.28, duration: 180, ease: 'outQuad' },
+        { to: 0.22, duration: 200, ease: 'outQuad' },
+        { to: 0, duration: 1200, ease: 'outElastic(1, .4)' },
+      ],
+      spin: [
+        { to: 0, duration: 180 },
+        { to: 1, duration: 160, ease: 'outQuad' },
+        { to: 0, duration: 2200, ease: 'outCubic' },
+      ],
+    });
+    moons.forEach((moon, i) => {
+      animate(moon, {
+        fling: [
+          { to: 1, duration: 320, ease: 'outCubic' },
+          { to: 0, duration: 1900, ease: 'inOutSine' },
+        ],
+        delay: 200 + i * 110,
+      });
+    });
+  }
+  disposer.listen(root, 'pointerdown', burst);
+  if (preview && !reduced) disposer.interval(burst, 5400);
 
   disposer.listen(root, 'pointermove', (event) => {
     const local = localPointer(event, root);
@@ -177,11 +207,14 @@ export function mount(container, options = {}) {
     // 横幅が足りない枠では、小さな立体の軌道まで入るように全体を縮める。
     const size = Math.min(1, camera.aspect / 1.3) * (0.3 + 0.7 * intro.v);
     group.scale.setScalar(size);
+    whirl += dt * fx.spin * 7;
+    body.scale.setScalar(1 + fx.pop);
     group.rotation.set((ptr.sy - 0.5) * 1.3, (ptr.sx - 0.5) * 1.8 + (1 - intro.v) * 2.5, 0);
-    body.rotation.set(time * 0.37, time * 0.53, time * 0.11);
+    body.rotation.set(time * 0.37 + whirl * 0.6, time * 0.53 + whirl, time * 0.11);
     for (const moon of moons) {
-      const angle = time * 0.8 + moon.phase;
-      moon.mesh.position.set(Math.cos(angle) * moon.radius, Math.sin(angle * 2 + moon.phase) * 0.28, Math.sin(angle) * moon.radius);
+      const angle = time * 0.8 + moon.phase + moon.fling * 1.6;
+      const orbit = moon.radius * (1 + moon.fling * 0.32);
+      moon.mesh.position.set(Math.cos(angle) * orbit, Math.sin(angle * 2 + moon.phase) * (0.28 + moon.fling * 0.5), Math.sin(angle) * orbit);
       moon.mesh.rotation.set(time * 1.7, time * 1.3 + moon.phase, 0);
     }
 
@@ -265,6 +298,8 @@ export function mount(container, options = {}) {
       intersectionObserver.disconnect();
       timer?.pause();
       utils.remove(intro);
+      utils.remove(fx);
+      utils.remove(moons);
       disposer.run();
       body.geometry.dispose();
       body.material.dispose();

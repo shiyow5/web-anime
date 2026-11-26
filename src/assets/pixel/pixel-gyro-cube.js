@@ -1,5 +1,5 @@
 import { animate, createTimer, steps, utils } from 'animejs';
-import { createDisposer, createRoot, h, injectStyle, prefersReducedMotion, removeRoot } from '../../lib/dom.js';
+import { createDisposer, createRoot, h, injectStyle, localPointer, prefersReducedMotion, removeRoot } from '../../lib/dom.js';
 import { resolveParams } from '../../lib/params.js';
 
 export const meta = {
@@ -8,7 +8,7 @@ export const meta = {
   category: 'pixel',
   libs: ['animejs'],
   description:
-    '低い解像度のキャンバスに、2 つの軸で回る立方体と、それを囲んで別々の軸で回る 2 本の輪を描きます。面の明るさは限られた色数と網点で表し、輪が立方体の手前と奥を通り抜けます。クリックすると勢いがついて、火花のドットが飛びます。ゲームの待機画面や、懐かしい雰囲気の見出しに使えます。',
+    '低い解像度のキャンバスに、2 つの軸で回る立方体と、それを囲んで別々の軸で回る 2 本の輪を描きます。面の明るさは限られた色数と網点で表し、輪が立方体の手前と奥を通り抜けます。クリックすると、立方体がいったん縮んでから 8 個の小さな立方体に分かれて順に飛び出し、その間だけ立方体と輪の配色が入れ替わります。輪は広がりながら、クリックした側へ向きを変えて速く回ります。小さな立方体が戻って合わさった瞬間に火花のドットが散り、回転がゆっくり元の速さに落ち着きます。ゲームの待機画面や、懐かしい雰囲気の見出しに使えます。',
   params: {
     tone: {
       type: 'select',
@@ -109,6 +109,8 @@ const CUBE_FACES = [
   { n: [0, 1, 0], v: [[-1, 1, 1], [1, 1, 1], [1, 1, -1], [-1, 1, -1]] },
   { n: [0, -1, 0], v: [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1]] },
 ];
+// 8 個に分かれたときの、小さな立方体それぞれの向き。
+const CUBE_PIECES = [-1, 1].flatMap((x) => [-1, 1].flatMap((y) => [-1, 1].map((z) => [x, y, z])));
 
 export function mount(container, options = {}) {
   injectStyle(meta.id, CSS);
@@ -135,7 +137,10 @@ export function mount(container, options = {}) {
   root.appendChild(canvas);
   const ctx = canvas.getContext('2d');
   const view = { w: 0, h: 0, scale: 1, image: null, pixels: null, depth: null, visible: true };
-  const state = { kick: 0, grow: reduced ? 1 : 0 };
+  const state = { grow: reduced ? 1 : 0 };
+  // タップの仕掛けで動かす値。squeeze は縮み、split は 8 個に分かれる度合い、kick は回転の勢い。
+  const fx = { squeeze: 1, split: 0, kick: 0 };
+  let kickDir = 1;
   const angle = { cubeX: 0.6, cubeY: 0.4, ringTurn: 0.3, ringSpin: 0, thin: 1.1 };
   let sparks = [];
   let time = 0;
@@ -215,12 +220,23 @@ export function mount(container, options = {}) {
     };
 
     // 立方体。X 軸と Y 軸の 2 本で回す。面は 2 枚の三角形に分けて塗る。
-    const size = 0.56 * state.grow;
+    const size = 0.56 * state.grow * fx.squeeze;
     const turnCube = (v) => rotatePoint(v, angle.cubeX, angle.cubeY, 0);
+    // 分かれている間は、立方体と輪の配色を入れ替える。
+    const swapped = fx.split > 0.04;
+    const cubeRamp = swapped ? colors.ring : colors.cube;
+    const ringRamp = swapped ? colors.cube : colors.ring;
+    // 分かれていないときは 1 個、分かれているときは 8 個の小さな立方体を、角の向きへずらして描く。
+    const pieces = swapped
+      ? CUBE_PIECES.map((corner, i) => {
+          const local = Math.min(1.15, Math.max(0, fx.split * 1.5 - i * 0.07));
+          return { half: size * 0.5, center: corner.map((c) => c * size * 0.5 * (1 + local * 1.5)) };
+        })
+      : [{ half: size, center: [0, 0, 0] }];
     if (size > 0.02) {
-      for (const face of CUBE_FACES) {
+      for (const piece of pieces) for (const face of CUBE_FACES) {
         const normal = turnCube(face.n);
-        const corners = face.v.map((v) => project(turnCube(v.map((c) => c * size))));
+        const corners = face.v.map((v) => project(turnCube(v.map((c, axis) => c * piece.half + piece.center[axis]))));
         const [a, b, c, d] = corners;
         const area = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
         // 裏を向いた面は描かない（画面の y は下向きなので、表の面は負になる）。
@@ -254,7 +270,7 @@ export function mount(container, options = {}) {
                 let shade = 0.1 + lit * 0.78 + (1 - v) * 0.08;
                 if (edge > 0.17 && edge < 0.24) shade -= 0.22;
                 if (Math.abs(u - 0.5) + Math.abs(v - 0.5) < 0.17) shade += 0.3;
-                color = colors.cube[ditherLevel(shade, colors.cube.length, x, y, amount)];
+                color = cubeRamp[ditherLevel(shade, cubeRamp.length, x, y, amount)];
               }
               put(x, y, z, color);
             }
@@ -274,7 +290,7 @@ export function mount(container, options = {}) {
     // 太い輪。自分の軸で回りながら（鋲の動きで分かる）、傾いた軸ごと Y 軸のまわりを回る。
     // 傾きは見下ろす角度より小さくしてあるので、輪が真横を向いて線になることはない。
     const turnRing = (v) => rotatePoint(rotatePoint(v, 0, 0, angle.ringSpin), 1.07, angle.ringTurn, 0);
-    const ringR = 1.2 * state.grow;
+    const ringR = 1.2 * state.grow * (1 + fx.split * 0.16);
     const tube = 0.085;
     if (ringR > 0.05) {
       const around = Math.ceil(ringR * unit * 8) + 24;
@@ -284,7 +300,7 @@ export function mount(container, options = {}) {
         for (let j = 0; j < across; j += 1) {
           const f = (j / across) * TAU;
           const q = ringR + tube * Math.cos(f);
-          splat(turnRing([q * Math.cos(t), q * Math.sin(t), tube * Math.sin(f)]), turnRing([Math.cos(f) * Math.cos(t), Math.cos(f) * Math.sin(t), Math.sin(f)]), colors.ring, 0);
+          splat(turnRing([q * Math.cos(t), q * Math.sin(t), tube * Math.sin(f)]), turnRing([Math.cos(f) * Math.cos(t), Math.cos(f) * Math.sin(t), Math.sin(f)]), ringRamp, 0);
         }
       }
       // 鋲。輪の上に 6 個の玉を付ける。
@@ -297,7 +313,7 @@ export function mount(container, options = {}) {
           for (let j = 0; j < studSteps * 2; j += 1) {
             const lon = (j / (studSteps * 2)) * TAU;
             const n = [Math.cos(lat) * Math.cos(lon), Math.cos(lat) * Math.sin(lon), Math.sin(lat)];
-            splat(turnRing([ringR * Math.cos(t) + n[0] * studR, ringR * Math.sin(t) + n[1] * studR, n[2] * studR]), turnRing(n), colors.ring, 0.12);
+            splat(turnRing([ringR * Math.cos(t) + n[0] * studR, ringR * Math.sin(t) + n[1] * studR, n[2] * studR]), turnRing(n), ringRamp, 0.12);
           }
         }
       }
@@ -335,21 +351,20 @@ export function mount(container, options = {}) {
 
   function update(dt) {
     time += dt;
-    const rate = p.speed * (1 + state.kick * 5);
+    const rate = p.speed * (1 + fx.kick * 4);
+    // 輪は、勢いが付いている間だけクリックした側へ向きを変える。
+    const ringRate = p.speed * (1 + fx.kick * 7) * (fx.kick > 0.08 ? kickDir : 1);
     angle.cubeX += dt * 0.7 * rate;
-    angle.cubeY += dt * 1.1 * rate;
-    angle.ringTurn -= dt * 0.55 * rate;
-    angle.ringSpin += dt * 0.9 * rate;
+    angle.cubeY += dt * 1.1 * rate * (fx.kick > 0.08 ? kickDir : 1);
+    angle.ringTurn -= dt * 0.55 * ringRate;
+    angle.ringSpin += dt * 0.9 * ringRate;
     angle.thin += dt * 0.8 * rate;
     sparks = sparks
       .map((s) => ({ ...s, life: s.life + dt, x: s.x + s.vx * dt, y: s.y + s.vy * dt, z: s.z + s.vz * dt, vy: s.vy - dt * 1.6 }))
       .filter((s) => s.life < s.max);
   }
 
-  // 勢いを付ける。回転が速まり、火花のドットが飛ぶ。
-  function spin() {
-    if (reduced) return;
-    animate(state, { kick: [1, 0], duration: 1800, ease: 'outCubic' });
+  function burstSparks() {
     const fresh = Array.from({ length: preview ? 14 : 28 }, () => {
       const a = Math.random() * TAU;
       const lift = Math.random() * 2 - 1;
@@ -358,6 +373,35 @@ export function mount(container, options = {}) {
       return { x: 0, y: 0, z: 0, vx: Math.cos(a) * flat * speed, vy: lift * speed + 0.6, vz: Math.sin(a) * flat * speed, life: 0, max: utils.random(0.5, 1.2, 2) };
     });
     sparks = [...sparks, ...fresh];
+  }
+
+  // 縮む → 8 個に分かれて飛び出す → 戻って合わさり火花が散る。direction が負なら左回り、正なら右回りに勢いが付く。
+  function spin(direction) {
+    if (reduced) return;
+    kickDir = Number.isFinite(direction) && direction < 0 ? -1 : 1;
+    utils.remove(fx);
+    animate(fx, {
+      squeeze: [
+        { to: 0.76, duration: 170, ease: 'inQuad' },
+        { to: 1, duration: 200, ease: 'outBack(3)' },
+      ],
+    });
+    animate(fx, {
+      split: [
+        { to: 0, duration: 170 },
+        { to: 1, duration: 420, ease: 'outBack(2)' },
+        { to: 1, duration: 420 },
+        { to: 0, duration: 380, ease: 'inBack(2)' },
+      ],
+      onComplete: burstSparks,
+    });
+    animate(fx, {
+      kick: [
+        { to: 0, duration: 170 },
+        { to: 1, duration: 320, ease: 'outQuad' },
+        { to: 0, duration: 2400, ease: 'outCubic' },
+      ],
+    });
   }
 
   const resizeObserver = new ResizeObserver(fit);
@@ -386,8 +430,8 @@ export function mount(container, options = {}) {
         draw();
       },
     });
-    disposer.listen(root, 'pointerdown', spin);
-    if (preview) disposer.interval(spin, 4400);
+    disposer.listen(root, 'pointerdown', (event) => spin(localPointer(event, root).x < 0.5 ? -1 : 1));
+    if (preview) disposer.interval(() => spin(Math.random() < 0.5 ? -1 : 1), 4400);
   }
 
   return {
@@ -395,6 +439,7 @@ export function mount(container, options = {}) {
     destroy() {
       timer?.pause();
       utils.remove(state);
+      utils.remove(fx);
       disposer.run();
       removeRoot(root);
     },

@@ -8,7 +8,7 @@ export const meta = {
   category: 'ascii',
   libs: ['animejs'],
   description:
-    'ゆっくりうねる縞と渦を、文字の濃淡だけで描きます。明るい帯は別の色に切り替わり、2 色の模様が混ざり合って流れます。ポインターを置くと、そのまわりで流れが渦のように曲がります。長く眺める背景や、待ち時間の画面に使えます。',
+    'ゆっくりうねる縞と渦を、文字の濃淡だけで描きます。明るい帯は別の色に切り替わり、2 色の模様が混ざり合って流れます。ポインターを置くと、そのまわりで流れが渦のように曲がります。タップすると、その場所に流れがきゅっと絞られてから輪が広がり、輪の通ったあとは文字が記号の集まりに書き換わって 2 色が入れ替わり、少し遅れて追いかける 2 本目の輪が元の文字へ戻していきます。長く眺める背景や、待ち時間の画面に使えます。',
   params: {
     color: { type: 'color', label: '暗い帯の色', default: '#a98bf5' },
     accent: { type: 'color', label: '明るい帯の色', default: '#84f2d2' },
@@ -26,6 +26,9 @@ const LAST = RAMP_CODES.length - 1;
 const BASE = 12;
 const MONO = 'ui-monospace,"SF Mono",Menlo,Consolas,monospace';
 const SPACE = 32;
+// 書き換えたあとの文字集合。濃淡の順に並べた記号だけを使う。
+const ALT_CODES = Array.from(' .:-=+<>/\\|[]{}#%@', (ch) => ch.charCodeAt(0));
+const ALT_LAST = ALT_CODES.length - 1;
 
 const CSS = `
 .ua-apl{position:absolute;inset:0;overflow:hidden;background:var(--ua-bg)}
@@ -85,6 +88,40 @@ export function mount(container, options = {}) {
   const ptr = { x: 0.5, y: 0.5, sx: 0.5, sy: 0.5, inside: false, gain: 0 };
   const intro = { v: reduced ? 1 : 0 };
   let time = reduced ? 9 : 3;
+  // タップの仕掛け。front は書き換える輪の半径、heal は元へ戻す輪の半径、pinch は流れを絞る強さ。
+  const shock = { x: 0, y: 0, front: 0, heal: 0, pinch: 0, on: false };
+
+  function rewrite(event) {
+    if (reduced || !g.cols) return;
+    const local = event ? localPointer(event, root) : { x: 0.2 + Math.random() * 0.6, y: 0.25 + Math.random() * 0.5 };
+    const halfW = (g.cols * g.aspect) / g.rows;
+    utils.remove(shock);
+    shock.x = (local.x * 2 - 1) * halfW;
+    shock.y = 1 - local.y * 2;
+    shock.front = 0;
+    shock.heal = 0;
+    shock.pinch = 0;
+    shock.on = true;
+    const far = Math.hypot(halfW, 1) * 2 + 0.3;
+    animate(shock, {
+      pinch: [
+        { to: 1, duration: 200, ease: 'outQuad' },
+        { to: 0, duration: 1600, ease: 'outElastic(1, .5)' },
+      ],
+      front: [
+        { to: 0, duration: 160 },
+        { to: far, duration: 1500, ease: 'outCubic' },
+      ],
+      heal: [
+        { to: 0, duration: 1500 },
+        { to: far, duration: 1900, ease: 'inOutSine' },
+      ],
+      onComplete() {
+        shock.on = false;
+      },
+    });
+  }
+  disposer.listen(root, 'pointerdown', rewrite);
 
   disposer.listen(root, 'pointermove', (event) => {
     const local = localPointer(event, root);
@@ -127,7 +164,19 @@ export function mount(container, options = {}) {
         const dx = x0 - cx;
         const dy = y0 - cy;
         const d2 = dx * dx + dy * dy;
-        const angle = twist * Math.exp(-d2 * 2.6);
+        let angle = twist * Math.exp(-d2 * 2.6);
+        let altered = false;
+        let rim = 0;
+        if (shock.on) {
+          const sx = x0 - shock.x;
+          const sy = y0 - shock.y;
+          const sd = Math.hypot(sx, sy);
+          angle += shock.pinch * 3.2 * Math.exp(-sd * sd * 5);
+          altered = sd < shock.front && sd >= shock.heal;
+          // 輪の縁は明るく縁取る。
+          rim = Math.max(Math.exp(-(((sd - shock.front) / 0.07) ** 2)), 0.7 * Math.exp(-(((sd - shock.heal) / 0.07) ** 2)));
+          if (shock.front <= 0) rim = 0;
+        }
         const ca = Math.cos(angle);
         const sa = Math.sin(angle);
         let x = (cx + dx * ca - dy * sa) * f;
@@ -142,9 +191,9 @@ export function mount(container, options = {}) {
           Math.sin(Math.hypot(x - Math.sin(t * 0.5) * 0.8, y - Math.cos(t * 0.4) * 0.6) * 4.2 - t * 1.4);
         const wave = 0.5 + 0.5 * Math.sin(v * 1.9 + t * 0.3);
         const edge = clamp((reach - Math.hypot(x0, y0)) * 3, 0, 1);
-        const lum = (0.04 + 0.96 * wave ** 1.35) * edge;
-        const code = RAMP_CODES[Math.round(lum * LAST)];
-        if (v > 0.45) {
+        const lum = Math.min(1, (0.04 + 0.96 * wave ** 1.35) * edge + rim * 0.8 * edge);
+        const code = altered ? ALT_CODES[Math.round(lum * ALT_LAST)] : RAMP_CODES[Math.round(lum * LAST)];
+        if (rim > 0.5 || v > 0.45 !== altered) {
           high[index] = code;
           low[index] = SPACE;
         } else {
@@ -174,6 +223,7 @@ export function mount(container, options = {}) {
         },
       });
   if (!reduced) animate(intro, { v: 1, duration: 1800, ease: 'outCubic' });
+  if (preview && !reduced) disposer.interval(() => rewrite(), 5200);
 
   const refit = () => {
     if (g.fit() && reduced) tick(0);
@@ -191,11 +241,13 @@ export function mount(container, options = {}) {
   refit();
 
   return {
+    rewrite,
     destroy() {
       resizeObserver.disconnect();
       intersectionObserver.disconnect();
       timer?.pause();
       utils.remove(intro);
+      utils.remove(shock);
       disposer.run();
       removeRoot(root);
     },

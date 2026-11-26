@@ -8,7 +8,7 @@ export const meta = {
   category: 'scifi',
   libs: ['animejs'],
   description:
-    '斜めに傾けた円盤の上を光の帯が回り、帯が通った場所の目標が光って、少しずつ消えていきます。目標は円盤から柱で浮き上がり、番号・方位・距離が添えられます。ポインターで円盤の傾きと向きが変わり、クリックした場所に新しい目標が現れます。',
+    '斜めに傾けた円盤の上を光の帯が回り、帯が通った場所の目標が光って、少しずつ消えていきます。目標は円盤から柱で浮き上がり、番号・方位・距離が添えられます。ポインターで円盤の傾きと向きが変わり、クリックすると、その場所へ枠が回りながら狭まって新しい目標が現れ、そこから探知の波が円盤の上を広がります。波が届いた順に、消えかけていたほかの目標も光り直します。',
   params: {
     sweep: { type: 'color', label: '光の帯の色', default: '#ffb347' },
     target: { type: 'color', label: '目標の色', default: '#ff4d6d' },
@@ -255,6 +255,49 @@ export function mount(container, options = {}) {
       ctx.fillText(`${String(bearingOf(target.seen.angle)).padStart(3, '0')}° ${Math.round(target.seen.radius * RANGE_KM)}km`, tx + size * 2.3, ty + fs * 0.55);
     }
 
+    // クリックで出す探知の波と、狭まる枠。波は円盤の面に沿って広がる。
+    for (const ping of pings) {
+      if (ping.glow > 0.01 && ping.r > 0) {
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.scale(1, ky);
+        ctx.rotate(state.yaw);
+        ctx.beginPath();
+        ctx.arc(0, 0, R, 0, TAU);
+        ctx.clip();
+        const ox = Math.cos(ping.angle) * ping.radius * R;
+        const oy = Math.sin(ping.angle) * ping.radius * R;
+        for (let i = 0; i < 3; i += 1) {
+          const r = (ping.r - i * 0.09) * R;
+          if (r <= 0) continue;
+          ctx.strokeStyle = rgba(i === 0 ? '#ffffff' : p.target, ping.glow * (0.9 - i * 0.3));
+          ctx.lineWidth = i === 0 ? 2 : 1.2;
+          ctx.beginPath();
+          ctx.arc(ox, oy, r, 0, TAU);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+      if (ping.mark > 0.01) {
+        const [mx, my] = point(ping.radius, ping.angle, ping.alt * 0.34 * ping.lockIn);
+        const half = R * 0.03 * (1.7 + (1 - ping.lockIn) * 6);
+        const corner = half * 0.45;
+        ctx.save();
+        ctx.translate(mx, my);
+        ctx.rotate((1 - ping.lockIn) * 1.4);
+        ctx.strokeStyle = rgba('#ffffff', ping.mark);
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+          ctx.moveTo(sx * half, sy * (half - corner));
+          ctx.lineTo(sx * half, sy * half);
+          ctx.lineTo(sx * (half - corner), sy * half);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
     // 中心の軸。
     ctx.strokeStyle = rgba(p.sweep, 0.9 * state.intro);
     ctx.lineWidth = 1.5;
@@ -298,10 +341,34 @@ export function mount(container, options = {}) {
     const dy = (py - cy) / (R * ky);
     const radius = Math.hypot(dx, dy);
     if (radius > 1 || radius < 0.05) return;
-    const added = makeTarget(radius, Math.atan2(dy, dx) - state.yaw, 1);
-    targets = [...targets, added].slice(-14);
-    if (reduced) draw();
+    pingAt(radius, Math.atan2(dy, dx) - state.yaw);
   }
+  // 枠が狭まって目標が現れ、そこから探知の波が広がる。波が通った目標は、その場で見つけ直したことにする。
+  let pings = [];
+  function pingAt(radius, angle) {
+    const added = makeTarget(radius, angle, reduced ? 1 : 0);
+    if (reduced) {
+      targets = [...targets, added].slice(-14);
+      draw();
+      return;
+    }
+    const ping = { radius, angle, alt: added.alt, r: 0, before: 0, glow: 0, lockIn: 0, mark: 0 };
+    pings = [...pings, ping].slice(-4);
+    animate(ping, {
+      lockIn: { to: 1, duration: 380, ease: 'inOutQuart' },
+      mark: [{ to: 1, duration: 120 }, { to: 1, duration: 500 }, { to: 0, duration: 500 }],
+      glow: [{ to: 0, duration: 380 }, { to: 1, duration: 80 }, { to: 0, duration: 1700, ease: 'inQuad' }],
+      r: [{ to: 0, duration: 380 }, { to: 2, duration: 1780, ease: 'outQuad' }],
+      onComplete() {
+        pings = pings.filter((item) => item !== ping);
+      },
+    });
+    disposer.timeout(() => {
+      added.lit = 1;
+      targets = [...targets, added].slice(-14);
+    }, 380);
+  }
+  disposer.add(() => utils.remove(pings));
 
   const observer = new ResizeObserver(resize);
   observer.observe(root);
@@ -346,6 +413,13 @@ export function mount(container, options = {}) {
         target.radius += target.climb * dt;
         if (target.radius < 0.14 || target.radius > 0.94) target.climb *= -1;
         target.lit *= Math.exp(-dt / fadeTime);
+        for (const ping of pings) {
+          const far = Math.hypot(Math.cos(target.angle) * target.radius - Math.cos(ping.angle) * ping.radius, Math.sin(target.angle) * target.radius - Math.sin(ping.angle) * ping.radius);
+          if (far > 0.02 && far > ping.before && far <= ping.r) {
+            target.seen = { radius: target.radius, angle: target.angle };
+            target.lit = Math.max(target.lit, 0.95);
+          }
+        }
         // 光の帯が目標の方角をまたいだら、その位置で見つけたことにする。
         const gap = wrap(target.angle - before);
         if (gap <= omega * dt + 1e-6) {
@@ -354,10 +428,12 @@ export function mount(container, options = {}) {
           target.lit = 1;
         }
       }
+      for (const ping of pings) ping.before = ping.r;
       draw();
     },
   });
   disposer.add(() => timer.pause());
+  if (p.preview) disposer.interval(() => pingAt(0.25 + Math.random() * 0.6, Math.random() * TAU), 4600);
 
   return {
     destroy() {

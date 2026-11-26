@@ -1,4 +1,4 @@
-import { animate, createDrawable, createTimeline, stagger, utils } from 'animejs';
+import { animate, createDrawable, createTimeline, stagger, steps, utils } from 'animejs';
 import { createDisposer, createRoot, h, injectStyle, localPointer, prefersReducedMotion, removeRoot, s } from '../../lib/dom.js';
 import { resolveParams } from '../../lib/params.js';
 
@@ -8,7 +8,7 @@ export const meta = {
   category: 'cyber',
   libs: ['animejs'],
   description:
-    '乱数から配線を引いた基板の上を、光の粒が配線に沿って走ります。粒が出入りするたびに、部品の端子と配線の終点が点灯します。ポインターのまわりは基板が明るくなり、クリックすると中央の部品からすべての配線へ一斉に光が走ります。',
+    '乱数から配線を引いた基板の上を、光の粒が配線に沿って走ります。粒が出入りするたびに、部品の端子と配線の終点が点灯します。ポインターのまわりは基板が明るくなり、タップすると、その位置に探針の輪が絞り込まれて信号が注入され、波の輪が広がるのに合わせて、近い配線から順に光が枝分かれして走り、波が届いた部品が明滅します。',
   params: {
     pulse: { type: 'color', label: '光の色', default: '#ffd166' },
     trace: { type: 'color', label: '配線の色', default: '#2f8f77' },
@@ -266,13 +266,85 @@ export function mount(container, options = {}) {
     disposer.add(() => timeline.pause());
   }
 
-  function surge() {
-    if (core) animate(core, { opacity: [1, 0.3], scale: [1.5, 1], duration: 900, ease: 'outExpo' });
-    active.forEach((runner, i) => {
-      disposer.timeout(() => runner.timeline.restart(), 1 + (i % 12) * 28);
+  // 信号の注入。タップした位置に探針の輪が絞り込まれ（準備）、そこから波の輪が広がって、近い配線から順に、
+  // タップに近い端を起点にして光が走り、波が届いた部品が順に明滅する（山場）。そのあと、ふだんの流れに戻る（余韻）。
+  const svg = root.querySelector('svg');
+  const probe = s('circle', { cx: 0, cy: 0, r: 6, fill: 'none', stroke: p.pulse, 'stroke-width': 2, opacity: 0, 'pointer-events': 'none' });
+  const wave = s('circle', { cx: 0, cy: 0, r: 6, fill: 'none', stroke: p.pulse, 'stroke-width': 1.5, opacity: 0, 'pointer-events': 'none' });
+  svg.append(wave, probe);
+  const WAVE_MS = 1.15;
+  const shots = new Set();
+  function surge(event) {
+    let x = (0.2 + Math.random() * 0.6) * COLS * CELL;
+    let y = (0.25 + Math.random() * 0.5) * ROWS * CELL;
+    const matrix = event?.clientX === undefined ? null : svg.getScreenCTM();
+    if (matrix) ({ x, y } = new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix.inverse()));
+    for (const shot of shots) shot.pause();
+    shots.clear();
+    utils.remove([probe, wave, ...chipGroups]);
+    for (const circle of [probe, wave]) {
+      circle.setAttribute('cx', x.toFixed(1));
+      circle.setAttribute('cy', y.toFixed(1));
+    }
+    const reach = Math.hypot(COLS * CELL, ROWS * CELL);
+    animate(probe, {
+      r: [70, 7],
+      opacity: [
+        { to: 1, duration: 200 },
+        { to: 0, duration: 500, delay: 300 },
+      ],
+      duration: 240,
+      ease: 'outExpo',
+    });
+    animate(wave, { r: [7, reach], opacity: [0.8, 0], duration: reach * WAVE_MS, delay: 200, ease: 'linear' });
+    for (const runner of active) {
+      const { trace, dash } = runner;
+      const [sx, sy] = trace.points[0];
+      const [ex, ey] = trace.points.at(-1);
+      const fromStart = Math.hypot(sx * CELL - x, sy * CELL - y);
+      const fromEnd = Math.hypot(ex * CELL - x, ey * CELL - y);
+      const backward = fromEnd < fromStart;
+      const delay = 200 + Math.min(fromStart, fromEnd) * WAVE_MS;
+      const [firstLit, firstHalo, lastLit, lastHalo] = backward
+        ? [runner.viaLit, runner.viaHalo, runner.pinLit, runner.pinHalo]
+        : [runner.pinLit, runner.pinHalo, runner.viaLit, runner.viaHalo];
+      const travel = (trace.length + dash) / 0.7;
+      runner.timeline.pause();
+      utils.set([runner.spark, runner.glow], { strokeDashoffset: dash });
+      const shot = createTimeline({
+        delay,
+        onComplete() {
+          shots.delete(shot);
+          runner.timeline.restart();
+        },
+      }).add([runner.spark, runner.glow], { strokeDashoffset: backward ? [-trace.length, dash] : [dash, -trace.length], duration: travel, ease: 'outQuad', composition: 'none' }, 0);
+      // ふだんの流れの動きを消してしまわないように、重ねがけの扱いを切って足す。
+      for (const [target, values, at] of [...flashOf(firstLit, firstHalo, 0), ...flashOf(lastLit, lastHalo, travel * 0.8)]) shot.add(target, { ...values, composition: 'none' }, at);
+      shots.add(shot);
+    }
+    board.chips.forEach((chip, i) => {
+      const distance = Math.hypot((chip.x + chip.w / 2) * CELL - x, (chip.y + chip.h / 2) * CELL - y);
+      animate(chipGroups[i], {
+        opacity: [
+          { to: 0.3, duration: 70, ease: steps(1) },
+          { to: 1, duration: 70, ease: steps(1) },
+          { to: 0.5, duration: 70, ease: steps(1) },
+          { to: 1, duration: 420, ease: 'outQuad' },
+        ],
+        scale: [
+          { to: 1.05, duration: 140, ease: 'outQuad' },
+          { to: 1, duration: 700, ease: 'outElastic(1, .5)' },
+        ],
+        delay: 200 + distance * WAVE_MS,
+      });
+      if (chip.cpu && core) animate(core, { opacity: [1, 0.3], scale: [1.5, 1], duration: 900, delay: 200 + distance * WAVE_MS, ease: 'outExpo' });
     });
   }
+  disposer.add(() => {
+    for (const shot of shots) shot.pause();
+  });
   disposer.listen(root, 'click', surge);
+  if (p.preview) disposer.interval(() => surge(), 4800);
   disposer.listen(root, 'pointermove', (event) => {
     const { x, y } = localPointer(event, root);
     light.style.setProperty('--mx', `${(x * 100).toFixed(1)}%`);
@@ -297,6 +369,7 @@ export function mount(container, options = {}) {
     surge,
     destroy() {
       disposer.run();
+      utils.remove([probe, wave, ...chipGroups]);
       removeRoot(root);
     },
   };

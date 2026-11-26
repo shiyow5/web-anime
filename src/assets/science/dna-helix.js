@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { animate, utils } from 'animejs';
+import { animate, createTimer, utils } from 'animejs';
 import { createStage } from '../../lib/stage.js';
 import { resolveParams } from '../../lib/params.js';
 import { h, injectStyle } from '../../lib/dom.js';
@@ -10,7 +10,7 @@ export const meta = {
   category: 'science',
   libs: ['three', 'animejs'],
   description:
-    '2 本の鎖と、それをつなぐ塩基対が、右巻きのらせんになって回ります。A と T、G と C が必ず組になり、塩基ごとに色が違います。ポインターを左右に動かすと、1 塩基対あたりのねじれ角が変わり、らせんが締まったり緩んだりします。',
+    '2 本の鎖と、それをつなぐ塩基対が、右巻きのらせんになって回ります。A と T、G と C が必ず組になり、塩基ごとに色が違います。ポインターを左右に動かすと、1 塩基対あたりのねじれ角が変わり、らせんが締まったり緩んだりします。タップすると、触った位置から塩基対の結びつきが切れ、2 本の鎖がファスナーのように両端へ向かって開いていきます。開ききると、同じ位置から順に塩基が引き合って閉じ直し、らせんが弾みながら元の太さに戻ります。',
   params: {
     scheme: {
       type: 'select',
@@ -77,7 +77,9 @@ export function mount(container, options = {}) {
   const count = Math.round(p.pairs);
   const sequence = makeSequence(count);
   const palette = SCHEMES[p.scheme];
-  const state = { grow: stage.reduced ? 1 : 0 };
+  // open と close は、開く波と閉じる波がどこまで進んだか（0〜1）。origin は触った塩基対の番号。
+  const state = { grow: stage.reduced ? 1 : 0, open: 0, close: 0, whirl: 0 };
+  let origin = 0;
 
   const hud = h('div', { class: 'ua-dna', style: { '--ua-ink': p.backbone } });
   const twistText = h('span');
@@ -136,6 +138,8 @@ export function mount(container, options = {}) {
   const pointsA = Array.from({ length: count }, () => new THREE.Vector3());
   const pointsB = Array.from({ length: count }, () => new THREE.Vector3());
   const grown = new Float32Array(count);
+  const gapA = new THREE.Vector3();
+  const gapB = new THREE.Vector3();
 
   function placeRod(mesh, index, from, to, thickness) {
     dir.subVectors(to, from);
@@ -153,7 +157,11 @@ export function mount(container, options = {}) {
       grown[i] = g;
       const angle = (i - centre) * twistRad;
       const x = (i - centre) * RISE;
-      const r = RADIUS * (0.25 + 0.75 * g);
+      // ほどけ具合。開く波が通ると 1 になり、閉じる波が通ると少し行き過ぎてから 0 に戻る。
+      const far = Math.abs(i - origin);
+      const closing = smooth((state.close * (count + 9) - far) / 3);
+      const apart = smooth((state.open * (count + 9) - far) / 3) - closing - Math.sin(closing * Math.PI) * 0.22;
+      const r = RADIUS * (0.25 + 0.75 * g) * (1 + apart * 0.75);
       pointsA[i].set(x, Math.cos(angle) * r, Math.sin(angle) * r);
       pointsB[i].set(x, Math.cos(angle + GROOVE) * r, Math.sin(angle + GROOVE) * r);
       quaternion.identity();
@@ -164,8 +172,10 @@ export function mount(container, options = {}) {
       // 塩基対。プリン（A・G）は大きいので、継ぎ目をピリミジン側へ寄せる。
       const split = PURINE[sequence[i]] ? 0.57 : 0.43;
       const joint = new THREE.Vector3().lerpVectors(pointsA[i], pointsB[i], split);
-      placeRod(bases, i * 2, pointsA[i], joint, g);
-      placeRod(bases, i * 2 + 1, joint, pointsB[i], g);
+      // ほどけた塩基対は、継ぎ目から離れて、それぞれの鎖の側へ縮む。
+      const gap = Math.max(0, apart) * 0.62;
+      placeRod(bases, i * 2, pointsA[i], gapA.lerpVectors(joint, pointsA[i], gap), g);
+      placeRod(bases, i * 2 + 1, gapB.lerpVectors(joint, pointsB[i], gap), pointsB[i], g);
     }
     for (let i = 0; i < count - 1; i += 1) {
       const g = Math.min(grown[i], grown[i + 1]);
@@ -200,15 +210,41 @@ export function mount(container, options = {}) {
     twistNow += (target - twistNow) * (dt > 0 ? 1 - Math.exp(-dt * 5) : 1);
     showTwist(twistNow);
     layout(THREE.MathUtils.degToRad(twistNow));
-    helix.rotation.x += dt * p.spin;
+    helix.rotation.x += dt * (p.spin + state.whirl * 2.4);
     root.rotation.x = -stage.pointer.sy * 0.25;
     root.rotation.y = stage.pointer.sx * 0.2;
   });
 
+  // タップ。触った位置から開く → 開いたまま少し回る → 同じ位置から閉じ直す。
+  function unzip(x = 0, y = 0) {
+    if (stage.reduced) return;
+    const view = stage.viewport();
+    const along = ((x * view.width) / 2) * Math.cos(root.rotation.z) + ((y * view.height) / 2) * Math.sin(root.rotation.z);
+    origin = Math.min(count - 1, Math.max(0, Math.round((count - 1) / 2 + along / root.scale.x / RISE)));
+    utils.remove(state);
+    state.open = 0;
+    state.close = 0;
+    animate(state, {
+      grow: { to: 1, duration: 300 },
+      open: { to: 1, duration: 1100, ease: 'outQuad' },
+      close: { to: 1, duration: 1400, ease: 'inOutQuad', delay: 1500 },
+      whirl: [{ to: 1, duration: 500, ease: 'outQuad' }, { to: 0, duration: 2400, ease: 'inOutQuad' }],
+      onComplete() {
+        state.open = 0;
+        state.close = 0;
+      },
+    });
+  }
+  const onPointerDown = () => unzip(stage.pointer.x, stage.pointer.y);
+  container.addEventListener('pointerdown', onPointerDown);
+  const auto = p.preview && !stage.reduced ? createTimer({ duration: 6200, loop: true, onLoop: () => unzip(Math.random() - 0.5, 0) }) : null;
   if (!stage.reduced) animate(state, { grow: [0, 1], duration: 2200, ease: 'outCubic' });
 
   return {
+    unzip,
     destroy() {
+      auto?.pause();
+      container.removeEventListener('pointerdown', onPointerDown);
       utils.remove(state);
       hud.remove();
       stage.destroy();

@@ -9,7 +9,7 @@ export const meta = {
   category: 'fantasy',
   libs: ['three', 'animejs'],
   description:
-    '地面の魔法陣の上に、文字の刻まれた輪が何段も浮かび、中心では 3 本の輪が別々の軸で回ります。光の柱が立ちのぼり、粒がらせんを描いて上がっていきます。クリックすると発動して、輪が上下に広がり、柱が強く光ります。',
+    '地面の魔法陣の上に、文字の刻まれた輪が何段も浮かび、中心では 3 本の輪が別々の軸で回ります。光の柱が立ちのぼり、粒がらせんを描いて上がっていきます。タップすると詠唱が始まります。浮かぶ輪が上の段から順に地面へ畳まれ、中心の 3 本の輪が同じ面にそろって沈みます。続いて光の柱が噴き上がり、輪が下の段から順に跳ね上がり、3 本の輪は互いに直交する軸へ組み替わって独楽のように回ります。最後に輪が揺れながら元の高さへ戻ります。',
   params: {
     color: { type: 'color', label: '陣の色', default: '#ffd98a' },
     accent: { type: 'color', label: '柱と粒の色', default: '#9d6bff' },
@@ -158,6 +158,10 @@ void main(){
 }
 `;
 
+// 中心の 3 本の輪の向き。そろうときは水平な 1 つの面、組み替わるときは互いに直交する 3 つの面。
+const HOOP_FLAT = new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0));
+const HOOP_ORTHO = [new THREE.Euler(0, 0, 0), new THREE.Euler(Math.PI / 2, 0, 0), new THREE.Euler(0, Math.PI / 2, 0)].map((euler) => new THREE.Quaternion().setFromEuler(euler));
+
 export function mount(container, options = {}) {
   const p = resolveParams(meta.params, options);
   const stage = createStage(container, {
@@ -173,7 +177,7 @@ export function mount(container, options = {}) {
   const accent = new THREE.Color(p.accent);
   const additive = { transparent: true, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending };
   const textures = [circleTexture(rand), bandTexture(rand)];
-  const state = { power: 0, spread: 0, reveal: stage.reduced ? 1 : 0 };
+  const state = { power: 0, spread: 0, align: 0, ortho: 0, whirl: 0, lean: 0, reveal: stage.reduced ? 1 : 0 };
 
   const world = new THREE.Group();
   stage.scene.add(world);
@@ -194,7 +198,7 @@ export function mount(container, options = {}) {
     const material = new THREE.MeshBasicMaterial({ ...additive, map: textures[1], color: i % 2 ? accent : color, opacity: 0.9 });
     const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, 0.3, 96, 1, true), material);
     world.add(mesh);
-    return { mesh, base: 0.55 + i * 0.62, direction: i % 2 ? -1 : 1, drop: { v: stage.reduced ? 1 : 0 } };
+    return { mesh, base: 0.55 + i * 0.62, direction: i % 2 ? -1 : 1, fold: { v: 0 }, drop: { v: stage.reduced ? 1 : 0 } };
   });
 
   // 中心で回る 3 本の輪と、光る核。
@@ -240,14 +244,25 @@ export function mount(container, options = {}) {
     ground[1].rotation.z = -t * 0.2;
     for (const mesh of ground) mesh.scale.setScalar(Math.max(0.001, state.reveal) * (1 + state.power * 0.06));
     bands.forEach((band, i) => {
-      band.mesh.rotation.y += dt * p.speed * 0.35 * band.direction * (1 + state.power * 3);
-      band.mesh.position.y = (band.base + state.spread * (0.25 + i * 0.3) + Math.sin(time * 0.8 + i) * 0.05) * band.drop.v + (1 - band.drop.v) * 6;
+      band.mesh.rotation.y += dt * p.speed * 0.35 * band.direction * (1 + state.power * 3 + Math.abs(Math.min(0, band.fold.v)) * 6);
+      // fold が正のときは地面へ畳まれ、負のときは元の高さより上へ跳ね上がる。
+      const fold = band.fold.v;
+      const rest = band.base + Math.sin(time * 0.8 + i) * 0.05;
+      const height = fold >= 0 ? rest + (0.2 + i * 0.07 - rest) * fold : rest - fold * (0.35 + i * 0.32);
+      band.mesh.position.y = height * band.drop.v + (1 - band.drop.v) * 6;
       band.mesh.material.opacity = 0.9 * Math.min(1, Math.max(0, band.drop.v));
     });
     gyro.position.y = 1.9 + state.spread * 0.6 + Math.sin(time * 0.9) * 0.06;
     hoops[0].rotation.set(t * 0.9, t * 0.3, 0);
     hoops[1].rotation.set(t * 0.2, t * 1.1, t * 0.4);
     hoops[2].rotation.set(t * 0.5, 0, t * 1.3);
+    // 詠唱のあいだ、3 本の輪は同じ面にそろい、そのあと互いに直交する軸へ組み替わる。
+    hoops.forEach((hoop, i) => {
+      if (state.align > 0.001) hoop.quaternion.slerp(HOOP_FLAT, Math.min(1, state.align));
+      if (state.ortho > 0.001) hoop.quaternion.slerp(HOOP_ORTHO[i], Math.min(1, Math.max(0, state.ortho)));
+    });
+    gyro.rotation.y += dt * state.whirl * 11;
+    world.rotation.z = state.lean;
     core.scale.setScalar(1 + state.power * 0.8 + Math.sin(time * 3) * 0.06);
     // カメラは少し上から見下ろし、ポインターでまわりを回る。
     const orbit = stage.pointer.sx * 0.6 + Math.sin(time * 0.15) * 0.25;
@@ -262,11 +277,60 @@ export function mount(container, options = {}) {
     animate(drops, { v: 1, delay: stagger(160, { start: 500 }), ease: spring({ stiffness: 60, damping: 10 }) });
   }
 
-  function cast() {
+  // 詠唱。輪が上の段から地面へ畳まれ、中心の輪が同じ面にそろって沈む（準備）→ 柱が噴き上がり、輪が下の段から
+  // 跳ね上がり、中心の輪が直交する軸へ組み替わって回る（山場）→ 輪が揺れながら元の高さへ戻る（余韻）。
+  const folds = bands.map((band) => band.fold);
+  function cast(event) {
     if (stage.reduced) return;
+    const rect = container.getBoundingClientRect();
+    const nx = event?.clientX === undefined ? 0 : ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    utils.remove([state, ...folds]);
+    state.reveal = 1;
+    const last = bands.length - 1;
+    const launch = 620;
+    bands.forEach((band, i) => {
+      const down = (last - i) * 55;
+      const up = launch + i * 75;
+      animate(band.fold, {
+        v: [
+          { to: 1, duration: 360, delay: down, ease: 'inQuad' },
+          { to: 1, duration: Math.max(1, up - down - 360) },
+          { to: -1, duration: 300, ease: 'outBack(1.8)' },
+          { to: 0, duration: 1700, ease: 'outElastic(1, .5)' },
+        ],
+      });
+    });
     animate(state, {
-      power: [{ to: 1, duration: 220, ease: 'outQuad' }, { to: 0, duration: 2200, ease: 'outExpo' }],
-      spread: [{ to: 1, duration: 500, ease: 'outBack(2)' }, { to: 0, duration: 1900, ease: 'outElastic(1, .5)' }],
+      power: [
+        { to: 0, duration: launch },
+        { to: 1, duration: 180, ease: 'outQuad' },
+        { to: 0, duration: 2400, ease: 'outExpo' },
+      ],
+      spread: [
+        { to: -0.7, duration: 480, ease: 'inOutQuad' },
+        { to: 1, duration: 340, delay: 140, ease: 'outBack(2)' },
+        { to: 0, duration: 1900, ease: 'outElastic(1, .5)' },
+      ],
+      align: [
+        { to: 1, duration: 460, ease: 'inOutQuart' },
+        { to: 1, duration: 500 },
+        { to: 0, duration: 10 },
+      ],
+      ortho: [
+        { to: 0, duration: launch },
+        { to: 1, duration: 260, ease: 'outBack(2.5)' },
+        { to: 1, duration: 700 },
+        { to: 0, duration: 1300, ease: 'inOutQuad' },
+      ],
+      whirl: [
+        { to: 0, duration: launch },
+        { to: 1, duration: 200, ease: 'outQuad' },
+        { to: 0, duration: 2000, ease: 'outQuad' },
+      ],
+      lean: [
+        { to: -nx * 0.1, duration: 400, ease: 'outQuad' },
+        { to: 0, duration: 1800, ease: 'outElastic(1, .5)' },
+      ],
     });
   }
   container.addEventListener('click', cast);
@@ -279,7 +343,7 @@ export function mount(container, options = {}) {
       clearInterval(autoCast);
       clearTimeout(firstCast);
       container.removeEventListener('click', cast);
-      utils.remove([state, ...drops]);
+      utils.remove([state, ...drops, ...folds]);
       for (const texture of textures) texture.dispose();
       stage.destroy();
     },

@@ -1,5 +1,5 @@
 import { animate, createTimer, utils } from 'animejs';
-import { createDisposer, createRoot, h, injectStyle, prefersReducedMotion, removeRoot } from '../../lib/dom.js';
+import { createDisposer, createRoot, h, injectStyle, prefersReducedMotion, removeRoot, localPointer } from '../../lib/dom.js';
 import { resolveParams } from '../../lib/params.js';
 
 export const meta = {
@@ -8,7 +8,7 @@ export const meta = {
   category: 'pixel',
   libs: ['animejs'],
   description:
-    '奥・中・手前の 3 層のビルが違う速さで横に流れ、窓の明かりが点いたり消えたりします。雨か雪が降り、クリックすると稲光で街全体が一瞬明るくなります。タイトル画面や、夜の場面の背景に使えます。',
+    '奥・中・手前の 3 層のビルが違う速さで横に流れ、窓の明かりが点いたり消えたりします。雨か雪が降り、クリックすると、押した場所の真上に雷が落ちます。街全体が一瞬明るくなったあと停電して窓がいっせいに消え、押した場所から左右へ、灯りがちらつきながら順に戻っていきます。タイトル画面や、夜の場面の背景に使えます。',
   params: {
     weather: {
       type: 'select',
@@ -119,10 +119,11 @@ export function mount(container, options = {}) {
   const darkWindow = mix(p.sky, '#000000', 0.62);
   const road = mix(p.sky, '#000000', 0.88);
   const dropColor = p.weather === 'snow' ? '#f2f6ff' : mix('#8fb6ff', p.sky, 0.25);
-  const state = { flash: 0, rise0: reduced ? 0 : 1, rise1: reduced ? 0 : 1, rise2: reduced ? 0 : 1 };
+  const state = { flash: 0, out: 0, relight: 0, rise0: reduced ? 0 : 1, rise1: reduced ? 0 : 1, rise2: reduced ? 0 : 1 };
   let layers = [];
   let drops = [];
   let bolt = [];
+  let boltX = 0;
   let time = reduced ? 3 : 0;
   let destroyed = false;
 
@@ -165,7 +166,13 @@ export function mount(container, options = {}) {
         const key = building.id * 97 + row * 13 + col;
         const period = 5 + hash(key) * 12;
         const epoch = Math.floor(time / period + hash(key + 1));
-        const on = allOn || hash(key * 1.7 + epoch * 13.3) < p.lit;
+        let on = allOn || hash(key * 1.7 + epoch * 13.3) < p.lit;
+        if (!allOn && state.out > 0.5) {
+          // 停電のあいだは消える。灯りは雷の落ちた場所から外へ戻り、戻りぎわの窓はちらつく。
+          const far = Math.abs(x - boltX) / Math.max(1, view.w) - hash(key + 9) * 0.06;
+          const front = state.relight * 1.1;
+          on = on && far < front && (far < front - 0.07 || hash(key + Math.floor(time * 14)) > 0.45);
+        }
         if (on) ctx.fillStyle = hash(key + 5) < 0.18 ? coolWindow[index] : windowColors[index];
         else if (index === 2) ctx.fillStyle = darkWindow;
         if (on || index === 2) ctx.fillRect(x, y, spec.winW, spec.winH);
@@ -273,15 +280,30 @@ export function mount(container, options = {}) {
     drawWeather(ctx, w, hgt);
   }
 
-  function flash() {
+  function flash(event) {
     if (destroyed || reduced) return;
-    const startX = Math.round(view.w * utils.random(0.2, 0.8, 2));
+    const at = event && Number.isFinite(event.clientX) && view.scale > 0 ? localPointer(event, root).px / view.scale : NaN;
+    const startX = Number.isFinite(at) ? Math.round(at) : Math.round(view.w * utils.random(0.2, 0.8, 2));
+    boltX = startX;
     let x = startX;
     bolt = Array.from({ length: 9 }, (_, i) => {
       x += Math.round(utils.random(-3, 3));
       return [x, i * 4, 4];
     });
     animate(state, { flash: [1, 0], duration: 900, ease: 'outQuad' });
+    // 余韻: 稲光が収まると停電し、灯りが順に戻る。
+    animate(state, {
+      out: [
+        { to: 0, duration: 480 },
+        { to: 1, duration: 1 },
+        { to: 1, duration: 2500 },
+        { to: 0, duration: 1 },
+      ],
+      relight: [
+        { to: 0, duration: 1100 },
+        { to: 1, duration: 1800, ease: 'inOutSine' },
+      ],
+    });
   }
 
   const view = createPixelView(root, disposer, BASE_W, BASE_H, (v) => {
@@ -318,7 +340,7 @@ export function mount(container, options = {}) {
     },
   });
   disposer.listen(root, 'pointerdown', flash);
-  if (p.preview) disposer.interval(flash, 5200);
+  if (p.preview) disposer.interval(() => flash(), 5200);
 
   return {
     flash,

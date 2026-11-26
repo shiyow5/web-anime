@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { animate, utils } from 'animejs';
+import { animate, stagger, utils } from 'animejs';
 import { h } from '../../lib/dom.js';
 import { createStage } from '../../lib/stage.js';
 import { resolveParams } from '../../lib/params.js';
@@ -10,7 +10,7 @@ export const meta = {
   category: 'scifi',
   libs: ['three', 'animejs'],
   description:
-    '4 次元の立方体を 4 次元の中で回し、3 次元に投影した線画です。内と外の立方体が裏返るように入れ替わり、頂点が光ります。ポインターを動かすと回転の軸が変わり、クリックすると勢いよく回ります。左下に、いまの回転角が出ます。',
+    '4 次元の立方体を 4 次元の中で回し、3 次元に投影した線画です。内と外の立方体が裏返るように入れ替わり、頂点が光ります。ポインターを動かすと回転の軸が変わり、クリックすると、4 次元の奥行きがつぶれて内と外の立方体が 1 つに重なり、全体が小さく縮みます。そこから触った方向の軸へ勢いよく回り出しながら弾けるように開き直り、まわりの 3 本の輪が時間差で宙返りして収まります。左下に、いまの回転角が出ます。',
   params: {
     inner: { type: 'color', label: '奥側の色', default: '#8f6bff' },
     outer: { type: 'color', label: '手前側の色', default: '#ffcf6b' },
@@ -94,7 +94,8 @@ export function mount(container, options = {}) {
   });
   const inner = new THREE.Color(p.inner);
   const outer = new THREE.Color(p.outer);
-  const state = { grow: stage.reduced ? 1 : 0, unfold: stage.reduced ? 1 : 0, kick: 0 };
+  const state = { grow: stage.reduced ? 1 : 0, unfold: stage.reduced ? 1 : 0, kick: 0, squeeze: 0, pushX: 0, pushY: 0 };
+  const flips = [{ v: 0 }, { v: 0 }, { v: 0 }];
   const angles = { xw: 0.6, yw: 0.4, zw: 0.9, xy: 0.3 };
 
   const additive = { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending };
@@ -142,6 +143,7 @@ export function mount(container, options = {}) {
 
   const root = new THREE.Group();
   root.add(body, ...rings);
+  const ringRest = rings.map((ring) => ring.rotation.clone());
   stage.scene.add(root, dust);
 
   const readout = h('div', {
@@ -198,16 +200,20 @@ export function mount(container, options = {}) {
     const ax = pointer.inside ? pointer.sx : Math.sin(time * 0.23) * 0.7;
     const ay = pointer.inside ? pointer.sy : Math.cos(time * 0.31) * 0.6;
     const rate = dt * p.speed * (1 + state.kick * 5);
-    angles.xw += rate * (0.55 + ax * 0.9);
-    angles.yw += rate * ay * 1.1;
+    angles.xw += rate * (0.55 + ax * 0.9) + dt * state.kick * state.pushX * 4;
+    angles.yw += rate * ay * 1.1 + dt * state.kick * state.pushY * 4;
     angles.zw += rate * 0.31;
     angles.xy += rate * 0.17;
     update();
-    root.scale.setScalar(fit * (0.001 + state.grow));
+    root.scale.setScalar(fit * (0.001 + state.grow) * (1 - state.squeeze * 0.3));
     root.rotation.set(0.32 - ay * 0.35, ax * 0.5 + time * 0.05, 0);
+    const spun = flips.map((flip) => flip.v * Math.PI * 2);
     rings[0].rotation.y += dt * 0.12;
     rings[1].rotation.z -= dt * 0.08;
     rings[2].rotation.x += dt * 0.05;
+    rings[0].rotation.x = ringRest[0].x + spun[0];
+    rings[1].rotation.y = ringRest[1].y + spun[1];
+    rings[2].rotation.z = ringRest[2].z + spun[2];
     dust.rotation.y = time * 0.01 + ax * 0.05;
     pointMaterial.size = 0.42 * (1 + state.kick * 0.9);
     const slot = Math.floor(time * 10);
@@ -220,8 +226,23 @@ export function mount(container, options = {}) {
 
   function spin() {
     if (stage.reduced) return;
-    animate(state, { kick: [1, 0], duration: 1700, ease: 'outExpo' });
+    // たたんで縮む → 触った方向へ回りながら開き直る → 輪が順に宙返りして収まる。
+    state.pushX = stage.pointer.x;
+    state.pushY = stage.pointer.y;
+    utils.remove(state);
+    animate(state, {
+      unfold: [{ to: 0, duration: 300, ease: 'inQuad' }, { to: 1, duration: 1500, ease: 'outElastic(1, .5)' }],
+      squeeze: [{ to: 1, duration: 300, ease: 'inQuad' }, { to: 0, duration: 1100, ease: 'outElastic(1, .4)' }],
+      kick: [{ to: 0.15, duration: 300 }, { to: 1, duration: 120, ease: 'outQuad' }, { to: 0, duration: 1900, ease: 'outExpo' }],
+      grow: { to: 1, duration: 200 },
+    });
+    utils.remove(flips);
+    flips.forEach((flip) => {
+      flip.v = 0;
+    });
+    animate(flips, { v: 1, duration: 1600, ease: 'outElastic(1, .7)', delay: stagger(180, { start: 300 }) });
   }
+  const auto = p.preview && !stage.reduced ? setInterval(spin, 5000) : 0;
   if (!stage.reduced) {
     animate(state, { grow: [0, 1], duration: 1500, ease: 'outExpo' });
     animate(state, { unfold: [0, 1], duration: 2200, delay: 500, ease: 'inOutQuart' });
@@ -231,8 +252,10 @@ export function mount(container, options = {}) {
   return {
     spin,
     destroy() {
+      clearInterval(auto);
       container.removeEventListener('click', spin);
       utils.remove(state);
+      utils.remove(flips);
       readout.remove();
       stage.destroy();
     },

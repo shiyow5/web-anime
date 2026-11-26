@@ -11,7 +11,7 @@ export const meta = {
   category: 'cyber',
   libs: ['three', 'animejs'],
   description:
-    '脈打つ核のまわりを、軸がすべて違う輪が歳差しながら回り、上下には小さな輪の柱が積まれます。輪の上では、さらに小さな輪が自分の軸で回ります。クリックすると過負荷になり、映像が乱れて輪が一気に速まり、ゆっくり元へ戻ります。動力や処理中の表示に使えます。',
+    '脈打つ核のまわりを、軸がすべて違う輪が歳差しながら回り、上下には小さな輪の柱が積まれます。輪の上では、さらに小さな輪が自分の軸で回ります。タップすると封じ込めと再点火が起きます。輪が 1 本ずつ足場と同じ面へ倒れ込んで重なり、上下の柱が核へ引き寄せられ、映像が乱れます。続いて核が光って衝撃の輪が走り、柱が外へ弾かれ、輪が元の軸へ揺れながら戻ります。再点火のたびに、差し色が通常の色と高温の色で入れ替わります。動力や処理中の表示に使えます。',
   params: {
     color: { type: 'color', label: '線の色', default: '#c4f0ff' },
     accent: { type: 'color', label: '差し色', default: '#a784ff' },
@@ -99,7 +99,7 @@ export function mount(container, options = {}) {
     pivot.add(spinner);
     precess.add(pivot);
     withIntro(precess, spec.from);
-    return { precess, spinner, minis, axis: new THREE.Vector3(...spec.axis).normalize(), rate: spec.rate, spin: spec.spin };
+    return { precess, pivot, spinner, minis, fold: { v: 0 }, baseTilt: pivot.quaternion.clone(), axis: new THREE.Vector3(...spec.axis).normalize(), rate: spec.rate, spin: spec.spin };
   });
 
   // 上下の柱。小さな輪を、外へ行くほど細く積む。
@@ -116,7 +116,7 @@ export function mount(container, options = {}) {
       const baseY = sign * (2.1 + k * 0.25);
       flat.position.y = baseY;
       withIntro(flat, [0, sign * (1.2 + k * 0.5)]);
-      stacks.push({ flat, spinner, baseY, sign, k, dir: (k % 2 === 0 ? 1 : -1) * sign });
+      stacks.push({ flat, spinner, baseY, sign, k, off: { v: 0 }, dir: (k % 2 === 0 ? 1 : -1) * sign });
     }
   }
   const axisLine = line(new THREE.CylinderGeometry(0.008, 0.008, 6.6, 6), 0.3);
@@ -134,6 +134,9 @@ export function mount(container, options = {}) {
     deck.add(wave);
     return { wave, offset };
   });
+  // 再点火のときに 1 回だけ走る、衝撃の輪。
+  const blast = line(ringBand(0.94, 1), 0);
+  deck.add(blast);
 
   // 核。線の多面体の中で、光る立体が脈打つ。
   const cage = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.IcosahedronGeometry(0.46, 1)), new THREE.LineBasicMaterial({ color: p.color, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false }));
@@ -141,7 +144,10 @@ export function mount(container, options = {}) {
   const halo = accent(new THREE.SphereGeometry(0.26, 24, 16), 0.1);
   root.add(cage, heart, halo);
 
-  const state = { over: 0, kick: 0 };
+  const state = { over: 0, kick: 0, blast: 1, flash: 0, tone: 0, tiltX: 0, tiltY: 0 };
+  const baseBloom = stage.bloomPass?.strength ?? 0;
+  const flatQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0));
+  const foldQuat = new THREE.Quaternion();
   let fit = 1;
   stage.onResize(() => {
     const view = stage.viewport();
@@ -157,10 +163,13 @@ export function mount(container, options = {}) {
       ring.precess.rotateOnAxis(ring.axis, step * ring.rate);
       ring.spinner.rotation.z += step * ring.spin;
       ring.minis.forEach((mini, j) => { mini.rotation.z += step * (1.4 + j * 0.7); });
+      // 封じ込めのあいだは、歳差の向きを打ち消して、足場と同じ面へ倒す。
+      foldQuat.copy(ring.precess.quaternion).invert().multiply(flatQuat);
+      ring.pivot.quaternion.copy(ring.baseTilt).slerp(foldQuat, Math.min(1, Math.max(0, ring.fold.v)));
     }
     for (const item of stacks) {
       item.spinner.rotation.z += step * item.dir * (0.6 + item.k * 0.25);
-      item.flat.position.y = item.baseY + item.sign * pulse * 0.035 * item.k;
+      item.flat.position.y = item.baseY + item.sign * (pulse * 0.035 * item.k + item.off.v * (item.off.v < 0 ? 0.85 : 0.32));
     }
     deckSpin.rotation.z -= step * 0.06;
     for (const { wave, offset } of waves) {
@@ -176,20 +185,71 @@ export function mount(container, options = {}) {
     }
     cage.rotation.set(time * 0.3, time * 0.42, 0);
     heart.rotation.set(time * 1.1, time * 0.8, 0);
-    heart.scale.setScalar(1 + pulse * 0.35 + state.over * 0.5);
+    heart.scale.setScalar(1 + pulse * 0.35 + state.over * 0.5 + state.flash * 0.8);
+    blast.scale.setScalar(0.4 + state.blast * 2.4);
+    blast.material.opacity = state.blast < 1 ? (1 - state.blast) * 0.95 : 0;
+    if (stage.bloomPass) stage.bloomPass.strength = baseBloom + state.flash * 0.12;
     halo.scale.setScalar(1 + pulse * 0.25 + state.over * 0.4);
-    for (const material of accentMats) material.color.copy(accentColor).lerp(hotColor, state.over);
-    root.rotation.set(0.3 + Math.sin(time * 0.23) * 0.1 - stage.pointer.sy * 0.3, time * 0.1 + stage.pointer.sx * 0.5, Math.sin(time * 0.17) * 0.06);
+    for (const material of accentMats) material.color.copy(accentColor).lerp(hotColor, Math.max(state.over, state.tone * 0.7));
+    root.rotation.set(0.3 + Math.sin(time * 0.23) * 0.1 - stage.pointer.sy * 0.3 + state.tiltX, time * 0.1 + stage.pointer.sx * 0.5 + state.tiltY, Math.sin(time * 0.17) * 0.06);
     root.scale.setScalar(fit * (1 + state.kick));
   });
 
-  // 過負荷。乱れて、輪が速まり、ばねで揺れながら戻る。
-  function overload() {
+  // 封じ込めと再点火。輪が順に足場の面へ倒れ、柱が核へ寄り、映像が乱れる（準備）→ 核が光って衝撃の輪が走り、
+  // 柱が外へ弾かれる（山場）→ 輪が元の軸へ揺れながら戻り、差し色が入れ替わって落ち着く（余韻）。
+  let tone = 0;
+  function overload(event) {
     if (stage.reduced) return;
-    utils.remove(state);
-    animate(state, { over: [{ to: 1, duration: 260, ease: 'outQuad' }, { to: 0, duration: 2400, ease: 'inOutSine' }] });
-    state.kick = 0.12;
-    animate(state, { kick: 0, ease: spring({ stiffness: 150, damping: 7 }) });
+    const rect = container.getBoundingClientRect();
+    const nx = event?.clientX === undefined ? 0 : ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    const ny = event?.clientY === undefined ? 0 : ((event.clientY - rect.top) / rect.height) * 2 - 1;
+    const folds = rings.map((ring) => ring.fold);
+    const offs = stacks.map((item) => item.off);
+    utils.remove([state, ...folds, ...offs]);
+    tone = 1 - tone;
+    state.blast = 1;
+    animate(state, {
+      over: [
+        { to: 1, duration: 520, ease: 'inQuad' },
+        { to: 1, duration: 180 },
+        { to: 0, duration: 2200, ease: 'inOutSine' },
+      ],
+    });
+    animate(state, {
+      kick: [
+        { to: -0.07, duration: 560, ease: 'inOutQuad' },
+        { to: 0.13, duration: 130, ease: 'outQuad' },
+        { to: 0, duration: 1300, ease: 'outElastic(1, .4)' },
+      ],
+    });
+    animate(state, {
+      flash: [
+        { to: 1, duration: 110, delay: 600, ease: 'outQuad' },
+        { to: 0, duration: 800, ease: 'outQuad' },
+      ],
+    });
+    animate(state, { blast: [0, 1], duration: 1100, delay: 620, ease: 'outExpo' });
+    animate(state, { tone, duration: 500, delay: 640, ease: 'outQuad' });
+    animate(state, {
+      tiltX: [{ to: ny * 0.3, duration: 320, ease: 'outQuad' }, { to: 0, duration: 1700, ease: 'outElastic(1, .55)' }],
+      tiltY: [{ to: nx * 0.4, duration: 320, ease: 'outQuad' }, { to: 0, duration: 1700, ease: 'outElastic(1, .55)' }],
+    });
+    animate(folds, {
+      v: [
+        { to: 1, duration: 460, ease: 'inOutQuart' },
+        { to: 1, duration: 140 },
+        { to: 0, duration: 1300, ease: 'outElastic(1, .5)' },
+      ],
+      delay: stagger(70),
+    });
+    animate(offs, {
+      v: [
+        { to: -1, duration: 480, ease: 'inQuad' },
+        { to: 1, duration: 200, ease: 'outExpo' },
+        { to: 0, duration: 1200, ease: 'outElastic(1, .45)' },
+      ],
+      delay: (_, i) => 60 + (i % STACK_COUNT) * 35,
+    });
     if (useNoise) noise.burst(1.4);
   }
   container.addEventListener('pointerdown', overload);
@@ -205,7 +265,7 @@ export function mount(container, options = {}) {
     destroy() {
       clearInterval(timer);
       container.removeEventListener('pointerdown', overload);
-      utils.remove(state);
+      utils.remove([state, ...rings.map((ring) => ring.fold), ...stacks.map((item) => item.off)]);
       utils.remove(intros);
       stage.destroy();
     },

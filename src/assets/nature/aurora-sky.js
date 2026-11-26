@@ -9,7 +9,7 @@ export const meta = {
   category: 'nature',
   libs: ['three'],
   description:
-    '山並みの影の上で、オーロラの光の帯がゆっくり揺れます。星がまたたき、手前の湖には空がそのまま映り込みます。ポインターを左右に動かすと帯が流れ、クリックすると一瞬強く輝きます。夜の静かな場面の背景に向いています。',
+    '山並みの影の上で、オーロラの光の帯がゆっくり揺れます。星がまたたき、手前の湖には空がそのまま映り込みます。ポインターを左右に動かすと帯が流れます。空をクリックすると、その高さから帯が裂け、光の波が左右へ走って色が変わり、ゆっくり元の色へ戻ります。湖をクリックすると波紋が立ち、映った空がゆがみます。夜の静かな場面の背景に向いています。',
   params: {
     colorA: { type: 'color', label: '帯の下の色', default: '#4dffb4' },
     colorB: { type: 'color', label: '帯の上の色', default: '#a56bff' },
@@ -29,6 +29,9 @@ uniform float uStars;
 uniform float uShift;
 uniform float uFlare;
 uniform float uReveal;
+uniform vec2 uTap;
+uniform float uTapAge;
+uniform vec3 uLake;
 uniform vec2 uRes;
 uniform vec3 uA;
 uniform vec3 uB;
@@ -62,14 +65,29 @@ vec3 scene(vec2 q){
   for (int i = 0; i < 3; i++) {
     float fi = float(i);
     float x = q.x * (0.85 + fi * 0.3) + fi * 3.7 + uShift * (0.25 + fi * 0.2);
+    // クリックの反応。幕ごとに少し遅らせて、裂け目・光の波・色の変化を順に起こす。
+    float age = max(uTapAge - fi * 0.16, 0.0);
+    float td = abs(q.x - uTap.x);
+    float front = age * 0.8;
+    float wave = exp(-pow((td - front) * 6.0, 2.0)) * exp(-age * 0.6) * step(0.001, age);
     float base = 0.17 + fi * 0.085 + 0.07 * sin(x * 1.7 + uTime * 0.25 + fi * 2.0) + 0.035 * sin(x * 4.3 - uTime * 0.4 + fi);
+    base += wave * 0.05;
     float h = q.y - base;
     float len = 0.2 + 0.2 * vnoise(vec2(x * 2.0 + uTime * 0.2, fi * 4.0));
     float rays = 0.4 + 0.6 * vnoise(vec2(x * 15.0 + sin(uTime * 0.3 + fi) * 1.5, uTime * 0.35 + fi * 9.0));
     float curtain = smoothstep(-0.014, 0.004, h) * exp(-max(h, 0.0) / (len * 0.42));
     float gaps = smoothstep(0.2, 0.68, vnoise(vec2(x * 0.8 - uTime * 0.12, fi * 5.0 + uTime * 0.05)));
     vec3 tint = mix(uA, uB, clamp(h / len * 1.25, 0.0, 1.0));
-    aurora += tint * curtain * rays * gaps * (1.0 - fi * 0.18);
+    // 波が通ったあとは色相が回る。数秒かけて元の色へ戻る。
+    float turned = smoothstep(front, front - 0.3, td) * smoothstep(7.0, 3.2, age) * step(0.001, age);
+    tint = mix(tint, tint.gbr * vec3(1.15, 0.9, 1.1), turned * 0.85);
+    // 裂け目。押した高さから上下へ開き、縁が白く光ってから閉じる。
+    float reach = smoothstep(0.06 + age * 0.9, 0.0, abs(q.y - uTap.y));
+    float tearW = 0.13 * smoothstep(0.0, 0.3, age) * exp(-age * 0.75) * reach;
+    float tear = smoothstep(tearW * 0.45, tearW, td);
+    float rim = exp(-pow((td - tearW) * 70.0, 2.0)) * smoothstep(0.004, 0.03, tearW);
+    aurora += tint * curtain * (rays * gaps * tear * (1.0 + wave * 1.4) + wave * 0.25) * (1.0 - fi * 0.18);
+    aurora += mix(tint, vec3(0.9, 1.0, 0.95), 0.5) * rim * curtain * 0.55;
   }
   float power = uIntensity * uReveal * (1.0 + uFlare * 1.3);
   col += aurora * power * 1.15;
@@ -95,11 +113,17 @@ void main(){
     float depth = -y;
     float wobble = (vnoise(vec2(x * 7.0, depth * 150.0 - uTime * 1.1)) - 0.5) * (0.012 + depth * 0.09);
     wobble += sin(depth * 110.0 + uTime * 1.3) * 0.0025;
+    // 湖を押したときの波紋。奥行きに合わせて縦につぶした輪が広がる。
+    float la = uTime - uLake.z;
+    float ld = length(vec2(x - uLake.x, (depth - uLake.y) * 3.2));
+    float lring = sin((ld - la * 0.3) * 70.0) * exp(-abs(ld - la * 0.3) * 9.0) * exp(-la * 0.7) * step(0.0, la);
+    wobble += lring * 0.03;
     col = scene(vec2(x + wobble, depth * 1.9 + 0.004)) * (0.62 - depth * 0.7);
     col += uSky * 0.12;
     // 水面に細い光の筋を散らす。
     float glint = smoothstep(0.86, 1.0, vnoise(vec2(x * 22.0 + uTime * 0.25, depth * 320.0)));
     col += glint * (uA * 0.1 + 0.02) * uIntensity * uReveal * smoothstep(0.0, 0.05, depth);
+    col += lring * lring * (uA * 0.35 + 0.08);
     col = mix(col, uSky * 0.5, smoothstep(0.004, 0.0, depth) * 0.6);
   }
   col *= 1.0 - 0.3 * pow(length(vUv - vec2(0.5, 0.55)) * 1.25, 2.0);
@@ -118,6 +142,9 @@ export function mount(container, options = {}) {
     uShift: { value: 0 },
     uFlare: { value: 0 },
     uReveal: { value: stage.reduced ? 1 : 0 },
+    uTap: { value: new THREE.Vector2(0, 0.3) },
+    uTapAge: { value: 0 },
+    uLake: { value: new THREE.Vector3(0, 0, -100) },
     uRes: { value: new THREE.Vector2(1, 1) },
     uA: { value: new THREE.Color(p.colorA) },
     uB: { value: new THREE.Color(p.colorB) },
@@ -136,16 +163,47 @@ export function mount(container, options = {}) {
     // 登場: 帯が 2 秒ほどかけて灯る。
     uniforms.uReveal.value = Math.min(1, uniforms.uReveal.value + dt * 0.55);
     uniforms.uFlare.value *= Math.exp(-dt * 1.6);
+    if (tapped) {
+      uniforms.uTapAge.value += dt;
+      // 裂け目が開ききる頃に、全体が一度だけ強く輝く。
+      if (!flashed && uniforms.uTapAge.value > 0.28) {
+        flashed = true;
+        uniforms.uFlare.value = 0.4;
+      }
+      if (uniforms.uTapAge.value > 9) {
+        tapped = false;
+        uniforms.uTapAge.value = 0;
+      }
+    }
     uniforms.uShift.value = stage.pointer.sx;
   });
 
-  function flare() {
-    if (!stage.reduced) uniforms.uFlare.value = 1;
+  let tapped = false;
+  let flashed = false;
+  // 押した位置を景色の座標に直す。空なら帯を裂き、湖なら波紋を立てて、映った位置の帯を裂く。
+  function tear(nx, ny) {
+    if (stage.reduced) return;
+    const res = uniforms.uRes.value;
+    const x = (nx - 0.5) * (res.x / Math.max(1, res.y));
+    const y = 1 - ny - HORIZON;
+    if (y < 0) uniforms.uLake.value.set(x, -y, uniforms.uTime.value);
+    uniforms.uTap.value.set(x, y < 0 ? -y * 1.9 : y);
+    uniforms.uTapAge.value = 0.0001;
+    tapped = true;
+    flashed = false;
+  }
+  function flare(event) {
+    const rect = container.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    tear((event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height);
   }
   container.addEventListener('pointerdown', flare);
+  // 一覧では、数秒おきに場所を変えて裂け目を見せる。
+  const auto = p.preview && !stage.reduced ? setInterval(() => tear(0.2 + Math.random() * 0.6, 0.2 + Math.random() * 0.3), 6500) : 0;
 
   return {
     destroy() {
+      clearInterval(auto);
       container.removeEventListener('pointerdown', flare);
       stage.destroy();
     },

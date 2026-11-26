@@ -8,7 +8,7 @@ export const meta = {
   category: 'ui',
   libs: ['animejs'],
   description:
-    '実績の数値が、桁ごとに縦に回って目標の値で止まります。画面に入ったときに始まり、下の桁ほど長く回って、少し行き過ぎてから戻ります。会社案内やサービス紹介の「数字で見る」欄に使います。',
+    '実績の数値が、桁ごとに縦に回って目標の値で止まります。画面に入ったときに始まり、下の桁ほど長く回って、少し行き過ぎてから戻ります。数値を押すと、その欄だけスロットのように回し直します。桁がいったん逆へ引かれてから回り、左の桁から順に止まって、止まった桁が光り、最後に単位が跳ねます。会社案内やサービス紹介の「数字で見る」欄に使います。',
   params: {
     duration: { type: 'range', label: '回る時間（秒）', min: 0.6, max: 4, step: 0.1, default: 1.9 },
     accent: { type: 'color', label: '差し色', default: '#ffb23e' },
@@ -27,7 +27,7 @@ const CSS = `
 .ua-nc__head h2{margin:0;font-size:1.25em;font-weight:700;letter-spacing:.04em}
 .ua-nc__head span{font-size:.8em;opacity:.6;font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
 .ua-nc__grid{display:grid;grid-template-columns:repeat(3,1fr);gap:0}
-.ua-nc__stat{display:grid;gap:.55em;padding:.4em 1.3em;border-left:1px solid color-mix(in srgb,var(--ua-ink) 16%,transparent);min-width:0}
+.ua-nc__stat{cursor:pointer;display:grid;gap:.55em;padding:.4em 1.3em;border-left:1px solid color-mix(in srgb,var(--ua-ink) 16%,transparent);min-width:0}
 .ua-nc__stat:first-child{padding-left:0;border-left:0}
 .ua-nc__idx{font-size:.75em;color:var(--ua-accent);font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;letter-spacing:.1em}
 .ua-nc__num{display:flex;align-items:baseline;margin:0;font-size:3.2em;font-weight:800;line-height:1;white-space:nowrap;
@@ -37,7 +37,7 @@ const CSS = `
 .ua-nc__col{display:block;will-change:transform}
 .ua-nc__col i{display:block;height:1em;font-style:normal;text-align:center}
 .ua-nc__sep{display:inline-block}
-.ua-nc__unit{margin-left:.25em;font-size:.36em;font-weight:700;letter-spacing:0;color:var(--ua-accent)}
+.ua-nc__unit{display:inline-block;transform-origin:0 100%;margin-left:.25em;font-size:.36em;font-weight:700;letter-spacing:0;color:var(--ua-accent)}
 .ua-nc__bar{position:relative;height:3px;border-radius:2px;background:color-mix(in srgb,var(--ua-ink) 14%,transparent)}
 .ua-nc__bar i{position:absolute;inset:0;border-radius:2px;background:var(--ua-accent);transform-origin:left;transform:scaleX(var(--r))}
 .ua-nc__bar b{position:absolute;top:-3px;width:1px;height:9px;background:color-mix(in srgb,var(--ua-ink) 35%,transparent)}
@@ -90,7 +90,7 @@ export function mount(container, options = {}) {
     const num = h('p', { class: 'ua-nc__num', role: 'img', 'aria-label': `${value}${unit}` }, parts, h('span', { class: 'ua-nc__unit', text: unit }));
     const ticks = [0.25, 0.5, 0.75].map((at) => h('b', { style: { left: `${at * 100}%` } }));
     const el = h('div', { class: 'ua-nc__stat' }, idx, num, h('div', { class: 'ua-nc__bar', 'aria-hidden': 'true' }, fill, ticks), texts);
-    return { el, cols, fill, ratio, texts, idx };
+    return { el, cols, fill, ratio, texts, idx, num, unit: num.lastChild, ticks };
   });
   const again = h('button', { class: 'ua-nc__again', type: 'button', text: 'もう一度回す' });
   const showButton = p.replayButton && !p.preview && !reduced;
@@ -113,7 +113,7 @@ export function mount(container, options = {}) {
     const base = p.duration * 1000;
     stats.forEach((stat, s) => {
       const targets = stat.cols.map((col) => col.el);
-      utils.remove([...targets, stat.el, stat.fill, stat.idx, ...stat.texts]);
+      utils.remove([...targets, stat.el, stat.fill, stat.idx, stat.unit, stat.num, ...stat.ticks, ...stat.texts]);
       stat.cols.forEach(({ el, travel }, i) => {
         el.style.transform = 'translateY(0em)';
         animate(el, {
@@ -128,6 +128,39 @@ export function mount(container, options = {}) {
       animate([stat.idx, ...stat.texts], { y: [10, 0], duration: 700, delay: stagger(90, { start: s * 220 + 150 }), ease: 'outQuart' });
       animate(stat.el, { opacity: [0, 1], duration: 600, delay: s * 220, ease: 'outQuad' });
     });
+  }
+
+  // 数値を押すと、その欄だけスロットのように回し直す。桁がいったん逆へ引かれてから回り、左の桁から順に止まって、止まるたびに桁が光る。
+  function spin(stat) {
+    if (reduced) return;
+    const base = p.duration * 1000 * 0.5;
+    const targets = stat.cols.map((col) => col.el);
+    utils.remove([...targets, stat.fill, stat.unit, stat.num, ...stat.ticks]);
+    utils.set(stat.el, { opacity: 1 });
+    let end = 0;
+    stat.cols.forEach(({ el, travel }, i) => {
+      const run = base + i * 300;
+      end = Math.max(end, 240 + run);
+      animate(el, {
+        y: [
+          // 準備。レバーを引いたように、止まっていた数字が少し下へ引かれる。
+          { from: `-${travel}em`, to: `-${travel - 0.42}em`, duration: 240, ease: 'outQuad' },
+          // 山場。頭から回り直し、左の桁から順に止まる。
+          { from: '0em', to: `-${travel + OVERSHOOT}em`, duration: run, ease: 'outCubic' },
+          { to: `-${travel}em`, duration: 520, ease: 'outElastic(1, .5)' },
+        ],
+        color: [
+          { to: p.ink, duration: 240 + run },
+          { to: p.accent, duration: 90 },
+          { to: p.ink, duration: 700, ease: 'outQuad' },
+        ],
+      });
+    });
+    animate(stat.fill, { scaleX: [{ to: 0, duration: 240, ease: 'inQuad' }, { to: stat.ratio, duration: end - 240, ease: 'inOutQuart' }] });
+    // 余韻。全部の桁が止まったら、単位が跳ね、目盛りが順に点滅する。
+    animate(stat.unit, { scale: [{ to: 1, duration: end }, { to: 1.5, duration: 130, ease: 'outQuad' }, { to: 1, duration: 700, ease: 'outElastic(1, .4)' }] });
+    animate(stat.num, { y: [{ to: 3, duration: 240, ease: 'outQuad' }, { to: 0, duration: 300, ease: 'outBack(3)' }] });
+    animate(stat.ticks, { scaleY: [{ to: 1, duration: end }, { to: 2.4, duration: 120 }, { to: 1, duration: 500, ease: 'outElastic(1, .4)' }], delay: stagger(70) });
   }
 
   if (reduced) {
@@ -147,7 +180,14 @@ export function mount(container, options = {}) {
     observer.observe(root);
     disposer.add(() => observer.disconnect());
     disposer.listen(again, 'click', play);
-    if (p.preview) disposer.interval(play, 5200);
+    for (const stat of stats) disposer.listen(stat.el, 'click', () => spin(stat));
+    if (p.preview) {
+      let turn = 0;
+      disposer.interval(() => {
+        spin(stats[turn % stats.length]);
+        turn += 1;
+      }, 3000);
+    }
   }
 
   return {

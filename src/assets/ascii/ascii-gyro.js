@@ -8,7 +8,7 @@ export const meta = {
   category: 'ascii',
   libs: ['animejs'],
   description:
-    '入れ子になった 3 本の輪が、それぞれ別の軸で回り、中心で球が自転します。すべて小さな文字の濃淡で描き、手前ほど濃い文字、奥ほど薄い文字に置き換え、輪ごとに色を分けています。ポインターで全体が傾き、クリックすると勢いがついて一気に回ります。計器や技術の話題の見出しに使えます。',
+    '入れ子になった 3 本の輪が、それぞれ別の軸で回り、中心で球が自転します。すべて小さな文字の濃淡で描き、手前ほど濃い文字、奥ほど薄い文字に置き換え、輪ごとに色を分けています。ポインターで全体が傾き、クリックすると、3 本の輪が外側から順に中心へ縮み、球がふくらみます。そこから一気に回りだして、輪が内側から順に弾けるように元の大きさへ広がり、揺れながら元の速さに戻ります。計器や技術の話題の見出しに使えます。',
   params: {
     outer: { type: 'color', label: '外の輪の色', default: '#7fe3d4' },
     middle: { type: 'color', label: '中の輪の色', default: '#f2c879' },
@@ -301,7 +301,29 @@ export function mount(container, options = {}) {
   // 勢いを付ける。回転が一気に速まり、ゆっくり元の速さへ戻る。
   function kick() {
     if (reduced) return;
-    animate(state, { kick: [1, 0], duration: 2200, ease: 'outCubic' });
+    // 準備: 輪が外側から順に縮み、球がふくらむ。山場: 一気に回り、輪が内側から順に弾けて広がる。余韻: 揺れながら戻る。
+    utils.remove(grow);
+    utils.remove(coreGrow);
+    animate(grow, {
+      v: [
+        { to: 0.55, duration: 240, ease: 'outQuad' },
+        { to: 1, duration: 900, ease: 'outBack(0.7)' },
+      ],
+      delay: stagger(70, { from: 'last' }),
+    });
+    animate(coreGrow, {
+      v: [
+        { to: 1.45, duration: 300, ease: 'outQuad' },
+        { to: 1, duration: 1100, ease: 'outElastic(1, .5)' },
+      ],
+    });
+    animate(state, {
+      kick: [
+        { to: 0, duration: 260 },
+        { to: 1, duration: 180, ease: 'outQuad' },
+        { to: 0, duration: 2400, ease: 'outCubic' },
+      ],
+    });
   }
 
   let last = performance.now();
@@ -319,7 +341,7 @@ export function mount(container, options = {}) {
   if (!reduced) {
     animate(grow, { v: 1, duration: 1300, delay: stagger(220), ease: 'outBack(1.6)' });
     animate(coreGrow, { v: 1, duration: 900, delay: 700, ease: 'outElastic(1, .6)' });
-    if (preview) disposer.interval(kick, 4600);
+    if (preview) disposer.interval(kick, 5200);
   }
   disposer.listen(root, 'pointerdown', kick);
 

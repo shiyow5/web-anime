@@ -9,7 +9,7 @@ export const meta = {
   category: 'cyber',
   libs: ['three', 'animejs'],
   description:
-    '放熱板、基板、演算素子、コイル、レンズ、外枠の 6 つの部品でできた装置が、設計図の分解図のように上下へ開き、また組み上がります。部品は 1 つずつ時間差をつけて、ばねの動きで動きます。クリックすると開閉が切り替わります。製品の構造を見せる場面に使えます。',
+    '放熱板、基板、演算素子、コイル、レンズ、外枠の 6 つの部品でできた装置が、設計図の分解図のように上下へ開き、また組み上がります。部品は 1 つずつ時間差をつけて、ばねの動きで動きます。部品をタップすると、その部品だけが横へ抜き出されて 1 回転し、名前の札が出てから元の段へ戻ります。製品の構造を見せる場面に使えます。',
   params: {
     edge: { type: 'color', label: '輪郭の色', default: '#5cf2ff' },
     accent: { type: 'color', label: '発光部の色', default: '#ff8a3d' },
@@ -19,6 +19,10 @@ export const meta = {
     spin: { type: 'range', label: '回る速さ', min: 0, max: 1, step: 0.05, default: 0.18 },
   },
 };
+
+const TAU = Math.PI * 2;
+const PULL = 2.3;
+const NAMES = ['放熱板 HEATSINK', '基板 BOARD', '演算素子 CORE', 'コイル COIL', 'レンズ LENS', '外枠 FRAME'];
 
 export function mount(container, options = {}) {
   const p = resolveParams(meta.params, options);
@@ -114,8 +118,28 @@ export function mount(container, options = {}) {
     { object: coil, y: -0.02, order: 0.5 },
     { object: lens, y: 0.24, order: 1.5 },
     { object: frame, y: 0.44, order: 2.5 },
-  ].map((part) => ({ ...part, open: { v: 0 } }));
+  ].map((part) => ({ ...part, open: { v: 0 }, pull: { v: 0 }, turn: { v: 0 } }));
   for (const part of parts) device.add(part.object);
+
+  // 抜き出した部品の名前を出す札。
+  const label = document.createElement('div');
+  Object.assign(label.style, {
+    position: 'absolute',
+    left: '0',
+    top: '0',
+    padding: '0.3em 0.7em',
+    borderLeft: `2px solid ${p.accent}`,
+    background: 'rgba(4, 8, 14, 0.72)',
+    color: p.edge,
+    font: `600 ${p.preview ? 10 : 13}px ui-monospace, "SF Mono", Menlo, Consolas, monospace`,
+    letterSpacing: '0.08em',
+    whiteSpace: 'nowrap',
+    pointerEvents: 'none',
+    opacity: '0',
+  });
+  container.appendChild(label);
+  const labelState = { v: 0 };
+  let selected = -1;
 
   // 中心を貫く補助線。分解図の軸にあたる。
   const axis = new THREE.Line(
@@ -130,8 +154,22 @@ export function mount(container, options = {}) {
   });
   stage.onFrame((time, dt) => {
     device.rotation.y += dt * p.spin + stage.pointer.sx * dt * 0.8;
-    for (const part of parts) part.object.position.y = part.y + part.open.v * part.order * p.gap;
-    glowMaterial.color.copy(accent).multiplyScalar(0.8 + Math.sin(time * 2.4) * 0.2);
+    // 画面の右にあたる向きを、回っている装置の中の向きに直す。抜き出す部品はその向きへ動く。
+    const side = device.rotation.y - Math.PI / 4;
+    for (const part of parts) {
+      const out = part.pull.v * PULL;
+      part.object.position.set(Math.cos(side) * out, part.y + part.open.v * part.order * p.gap, Math.sin(side) * out);
+      part.object.rotation.y = part.turn.v;
+      part.object.scale.setScalar(1 + part.pull.v * 0.08);
+    }
+    label.style.opacity = labelState.v.toFixed(3);
+    if (selected >= 0 && labelState.v > 0.001) {
+      parts[selected].object.getWorldPosition(projected).project(stage.camera);
+      const x = (projected.x * 0.5 + 0.5) * stage.size.width;
+      const y = (-projected.y * 0.5 + 0.5) * stage.size.height;
+      label.style.transform = `translate(${Math.min(x - 40, stage.size.width - label.offsetWidth - 8).toFixed(1)}px, ${(y + stage.size.height * 0.13).toFixed(1)}px)`;
+    }
+    glowMaterial.color.copy(accent).multiplyScalar(0.8 + Math.sin(time * 2.4) * 0.2 + (selected >= 0 ? parts[selected].pull.v * 0.5 : 0));
     axis.material.opacity = 0.15 + Math.max(0, parts[0].open.v) * 0.45;
   });
 
@@ -146,18 +184,96 @@ export function mount(container, options = {}) {
     // 外側の部品から順に動かす。開くときと閉じるときで順番を逆にする。
     animate(opens, { v: isOpen ? 1 : 0, delay: stagger(90, { from: isOpen ? 'last' : 'first' }), ease: spring({ stiffness: 80, damping: 11 }) });
   }
-  const onClick = () => toggle();
+
+  // 部品の抜き出し。タップした部品だけが横へ抜けて 1 回転し、名前の札が出てから元の段へ戻る。
+  const raycaster = new THREE.Raycaster();
+  const projected = new THREE.Vector3();
+  const pulls = parts.map((part) => part.pull);
+  const turns = parts.map((part) => part.turn);
+  let busy = false;
+  let cursor = 0;
+  let typing = { n: 0 };
+  function pickPart(event) {
+    if (!event) return -1;
+    const rect = container.getBoundingClientRect();
+    raycaster.setFromCamera(new THREE.Vector2(((event.clientX - rect.left) / rect.width) * 2 - 1, -(((event.clientY - rect.top) / rect.height) * 2 - 1)), stage.camera);
+    const hit = raycaster.intersectObjects(parts.map((part) => part.object), true).find((item) => item.object.isMesh);
+    if (!hit) return -1;
+    return parts.findIndex((part) => {
+      let node = hit.object;
+      while (node && node !== part.object) node = node.parent;
+      return node === part.object;
+    });
+  }
+  function inspect(index = cursor) {
+    if (stage.reduced) return;
+    const chosen = ((index % parts.length) + parts.length) % parts.length;
+    cursor = chosen + 1;
+    busy = true;
+    utils.remove([...pulls, ...turns, labelState, typing]);
+    // 準備。閉じていれば先に開き、前に抜いていた部品は戻す。
+    if (!isOpen) toggle(true);
+    parts.forEach((part, i) => {
+      if (i !== chosen) animate(part.pull, { v: 0, duration: 420, ease: 'outQuart' });
+      if (i !== chosen) animate(part.turn, { v: 0, duration: 420, ease: 'outQuart' });
+    });
+    selected = chosen;
+    const part = parts[chosen];
+    part.turn.v %= TAU;
+    typing = { n: 0 };
+    const name = `${String(chosen + 1).padStart(2, '0')} / ${NAMES[chosen]}`;
+    label.textContent = '';
+    // 山場で横へ抜けながら 1 回転し、札に名前が 1 文字ずつ出る。余韻で札が消え、部品が元の段へ戻る。
+    animate(part.pull, {
+      v: [
+        { to: 1, duration: 700, delay: 120, ease: 'outExpo' },
+        { to: 0, duration: 900, delay: 1900, ease: 'outBack(1.4)' },
+      ],
+      onComplete() {
+        busy = false;
+      },
+    });
+    animate(part.turn, { v: TAU, duration: 1700, delay: 260, ease: 'inOutQuart' });
+    animate(labelState, {
+      v: [
+        { to: 1, duration: 300, delay: 320, ease: 'outQuad' },
+        { to: 0, duration: 380, delay: 1800, ease: 'inQuad' },
+      ],
+    });
+    animate(typing, {
+      n: name.length,
+      duration: 520,
+      delay: 360,
+      ease: 'linear',
+      onUpdate() {
+        label.textContent = name.slice(0, Math.round(typing.n));
+      },
+    });
+  }
+  const onClick = (event) => {
+    if (stage.reduced) return toggle();
+    const hit = pickPart(event);
+    inspect(hit >= 0 ? hit : cursor);
+  };
   container.addEventListener('click', onClick);
   const first = setTimeout(() => toggle(true), 700);
-  const loop = stage.reduced ? 0 : setInterval(() => toggle(), p.preview ? 3200 : 5200);
+  // 触っていない間は開閉をくり返す。一覧では、部品を 1 つずつ順に抜き出して見せる。
+  const loop = stage.reduced
+    ? 0
+    : setInterval(() => {
+        if (p.preview) inspect();
+        else if (!busy) toggle();
+      }, p.preview ? 3600 : 5200);
 
   return {
     toggle,
+    inspect,
     destroy() {
       clearTimeout(first);
       clearInterval(loop);
       container.removeEventListener('click', onClick);
-      utils.remove(opens);
+      utils.remove([...opens, ...pulls, ...turns, labelState, typing]);
+      label.remove();
       stage.destroy();
     },
   };

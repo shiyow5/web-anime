@@ -8,7 +8,7 @@ export const meta = {
   category: 'text',
   libs: ['animejs'],
   description:
-    '文字を何枚も奥へ重ねて、押し出したような厚みを付けた見出しです。ポインターを動かすと全体が傾き、厚みの側面が見えます。読み込み時に 1 文字ずつ回って現れ、クリックすると重なりが奥へほどけてから戻ります。CSS の立体変形だけで作っています。',
+    '文字を何枚も奥へ重ねて、押し出したような厚みを付けた見出しです。ポインターを動かすと全体が傾き、厚みの側面が見えます。読み込み時に 1 文字ずつ回って現れ、クリックすると、厚みがいったん薄くつぶれ、触った文字から順に 1 文字ずつ別々の軸で回転しながら重なりが奥へ伸び、弾んでそろいます。CSS の立体変形だけで作っています。',
   params: {
     text: { type: 'text', label: '文字', default: 'DEPTH', maxLength: 14 },
     layers: { type: 'range', label: '重ねる枚数', min: 4, max: 24, step: 1, default: 14 },
@@ -111,14 +111,45 @@ export function mount(container, options = {}) {
   // 登場。1 文字ずつ、横向きから正面へ回って現れる。
   animate(charEls, { rotateY: [-100, 0], opacity: [0, 1], duration: 1300, ease: 'outBack(1.4)', delay: stagger(90) });
 
-  // 重なりを奥へほどいて、弾みながら戻す。
-  function unravel() {
-    animate(layerEls, {
-      translateZ: [
-        { to: (el) => depthOf(el, 3.4), duration: 520, ease: 'outExpo' },
-        { to: (el) => depthOf(el), duration: 1300, ease: 'outElastic(1, .45)' },
-      ],
-      delay: (el) => Number(el.dataset.index) * 14,
+  // 準備: 厚みが薄くつぶれて文字が沈む。山場: 触った文字から順に、1 文字ずつ別の軸で回り、重なりが奥へ伸びる。
+  // 余韻: 回り終えた文字から、厚みが弾みながら元にそろう。
+  const AXES = ['rotateX', 'rotateY', 'rotateZ'];
+  let turns = 0;
+  function unravel(event) {
+    const hitChar = event?.target?.closest?.('.ua-dt__char');
+    const origin = hitChar ? charEls.indexOf(hitChar) : Math.floor(Math.random() * charEls.length);
+    const from = Math.max(0, origin);
+    turns += 1;
+    const em = (step * count) / p.depth; // 文字の大きさ（px）
+    utils.remove(charEls);
+    utils.remove(layerEls);
+    utils.set(charEls, { rotateX: 0, rotateY: 0, rotateZ: 0, translateY: 0, opacity: 1 });
+    charEls.forEach((el, index) => {
+      const wait = Math.abs(index - from) * 95;
+      const axis = AXES[(index + turns) % AXES.length];
+      const way = (index + turns) % 2 ? 1 : -1;
+      animate(el, {
+        translateY: [
+          { to: em * 0.07, duration: 200, ease: 'outQuad' },
+          { to: -em * 0.16, duration: 380, ease: 'outCubic' },
+          { to: 0, duration: 900, ease: 'outBounce' },
+        ],
+        [axis]: [
+          { to: -18 * way, duration: 200, ease: 'outQuad' },
+          { to: 360 * way, duration: 1150, ease: 'inOutBack(1.6)' },
+        ],
+        delay: wait,
+        onComplete: () => utils.set(el, { [axis]: 0 }),
+      });
+      const layers = layerEls.filter((layer) => layer.parentNode === el);
+      animate(layers, {
+        translateZ: [
+          { to: (layer) => depthOf(layer, 0.15), duration: 200, ease: 'outQuad' },
+          { to: (layer) => depthOf(layer, 3.2), duration: 520, ease: 'outExpo' },
+          { to: (layer) => depthOf(layer), duration: 1200, ease: 'outElastic(1, .45)' },
+        ],
+        delay: (layer) => wait + Number(layer.dataset.index) * 12,
+      });
     });
   }
   disposer.listen(root, 'click', unravel);

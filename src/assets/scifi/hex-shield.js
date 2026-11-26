@@ -9,7 +9,7 @@ export const meta = {
   category: 'scifi',
   libs: ['three', 'animejs'],
   description:
-    '中心の核を、六角形の升目でできた球形の防壁が包みます。起動時に下から上へ張られ、何かが当たった場所から波紋が球の表面を伝わって、升目が順に光ります。クリックした場所にも衝撃が走ります。守る・安全といった意味を伝える場面に使えます。',
+    '中心の核を、六角形の升目でできた球形の防壁が包みます。起動時に下から上へ張られ、何かが当たった場所から波紋が球の表面を伝わって、升目が順に光ります。クリックした場所にも衝撃が走ります。そのとき防壁は押された向きへへこんで揺れ戻り、少し遅れて二つめの波紋が追いかけ、波が届くころに中の核が明るく脈打って籠が勢いよく回ります。守る・安全といった意味を伝える場面に使えます。',
   params: {
     color: { type: 'color', label: '防壁の色', default: '#4fd8ff' },
     hit: { type: 'color', label: '衝撃の色', default: '#ffd27a' },
@@ -116,6 +116,11 @@ export function mount(container, options = {}) {
   system.add(shield, cage, heart);
   stage.scene.add(system);
 
+  // クリックでの手応え。押された向きへのずれ、核の脈、籠の回転の勢い。
+  const fx = { push: 0, core: 0, whirl: 0 };
+  const pushDir = new THREE.Vector3();
+  let whirl = 0;
+  let echoTimer = 0;
   let next = 0;
   function impact(direction) {
     hits[next].set(direction.x, direction.y, direction.z, uniforms.uTime.value);
@@ -131,9 +136,13 @@ export function mount(container, options = {}) {
     uniforms.uTime.value = time;
     uniforms.uReveal.value = state.reveal;
     shield.rotation.y += dt * 0.08;
-    cage.rotation.set(time * 0.3, time * 0.4, 0);
-    heart.rotation.set(time * 0.9, time * 0.7, 0);
-    heart.scale.setScalar(1 + Math.sin(time * 3) * 0.08);
+    whirl += dt * fx.whirl * 7;
+    cage.rotation.set(time * 0.3 + whirl, time * 0.4 + whirl * 0.6, 0);
+    cage.scale.setScalar(1 + fx.core * 0.25);
+    heart.rotation.set(time * 0.9, time * 0.7 + whirl, 0);
+    heart.scale.setScalar(1 + Math.sin(time * 3) * 0.08 + fx.core * 0.9);
+    shield.position.copy(pushDir).multiplyScalar(-fx.push * 0.2);
+    shield.scale.setScalar(1 - fx.push * 0.035);
     system.rotation.x = -stage.pointer.sy * 0.25;
     system.rotation.y = stage.pointer.sx * 0.35;
   });
@@ -148,7 +157,18 @@ export function mount(container, options = {}) {
     raycaster.setFromCamera(ndc, stage.camera);
     const [found] = raycaster.intersectObject(shield);
     // 当たった位置を、回っている球から見た向きに直す。
-    if (found) impact(shield.worldToLocal(found.point.clone()).normalize());
+    if (!found) return;
+    const direction = shield.worldToLocal(found.point.clone()).normalize();
+    impact(direction);
+    pushDir.copy(system.worldToLocal(found.point.clone())).normalize();
+    clearTimeout(echoTimer);
+    echoTimer = setTimeout(() => impact(direction), 260);
+    utils.remove(fx);
+    animate(fx, {
+      push: [{ to: 1, duration: 110, ease: 'outQuad' }, { to: 0, duration: 1300, ease: 'outElastic(1, .35)' }],
+      core: [{ to: 0, duration: 450 }, { to: 1, duration: 160, ease: 'outQuad' }, { to: 0, duration: 1200, ease: 'outElastic(1, .5)' }],
+      whirl: [{ to: 0, duration: 450 }, { to: 1, duration: 200, ease: 'outQuad' }, { to: 0, duration: 1800, ease: 'outQuad' }],
+    });
   }
   container.addEventListener('pointerdown', onPointerDown);
 
@@ -163,8 +183,10 @@ export function mount(container, options = {}) {
     impact: (x = 0, y = 0, z = 1) => impact(new THREE.Vector3(Number(x) || 0, Number(y) || 0, Number(z) || 0).normalize()),
     destroy() {
       clearInterval(timer);
+      clearTimeout(echoTimer);
       container.removeEventListener('pointerdown', onPointerDown);
       utils.remove(state);
+      utils.remove(fx);
       stage.destroy();
     },
   };

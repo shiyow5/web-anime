@@ -9,7 +9,7 @@ export const meta = {
   category: 'scifi',
   libs: ['three', 'animejs'],
   description:
-    '点の集まりでできた惑星を、ホログラムのように映します。起動時に下から上へ走査して現れ、地表の 2 点を結ぶ光の弧が飛び交います。クリックすると映像が乱れて、もう一度走査し直します。',
+    '点の集まりでできた惑星を、ホログラムのように映します。起動時に下から上へ走査して現れ、地表の 2 点を結ぶ光の弧が飛び交います。クリックすると映像が乱れ、電源が落ちたように惑星が 1 本の横線までつぶれます。そこから勢いよく立ち上がり、惑星が速く回りながら下から走査し直され、2 本の輪が時間差で宙返りして元の向きに収まります。',
   params: {
     color: { type: 'color', label: '映像の色', default: '#4de8ff' },
     accent: { type: 'color', label: '弧の色', default: '#ffb347' },
@@ -206,20 +206,30 @@ export function mount(container, options = {}) {
   root.rotation.z = 0.32;
   stage.scene.add(root);
 
+  // 映し直しのときの動き。縦のつぶれ、回転の勢い、輪ごとの宙返り、触った方向への傾き。
+  const fx = { power: 1, whirl: 0, kickX: 0, kickY: 0 };
+  const flips = rings.map(() => ({ v: 0 }));
+  const ringBase = rings.map((ring) => ring.rotation.x);
+  let fit = 1;
   stage.onResize(({ height, dpr }) => {
     shared.uSize.value = height * dpr * 0.028;
     const view = stage.viewport();
-    root.scale.setScalar(Math.min(1, view.width / 5.4, view.height / 4.8));
+    fit = Math.min(1, view.width / 5.4, view.height / 4.8);
   });
   stage.onFrame((time, dt) => {
     shared.uTime.value = time;
     shared.uReveal.value = state.reveal;
     shared.uGlitch.value = state.glitch;
-    globe.rotation.y += dt * p.spin;
+    globe.rotation.y += dt * (p.spin + fx.whirl * 7);
     rings[0].rotation.y += dt * 0.3;
     rings[1].rotation.y -= dt * 0.2;
-    root.rotation.x = -stage.pointer.sy * 0.3;
-    root.rotation.y = stage.pointer.sx * 0.4;
+    rings.forEach((ring, index) => {
+      ring.rotation.x = ringBase[index] + flips[index].v * Math.PI * 2;
+    });
+    // 電源が落ちるときは、縦につぶれて横へ少し伸びる。
+    root.scale.set(fit * (1 + (1 - fx.power) * 0.18), fit * Math.max(0.012, fx.power), fit);
+    root.rotation.x = -stage.pointer.sy * 0.3 + fx.kickY;
+    root.rotation.y = stage.pointer.sx * 0.4 + fx.kickX;
   });
 
   function scan() {
@@ -237,9 +247,24 @@ export function mount(container, options = {}) {
       ],
     });
   }
+  // 映し直す。乱れてつぶれる → 立ち上がって速く回りながら走査 → 輪が宙返りして収まる。
   function reboot() {
+    if (stage.reduced) return;
     glitch();
-    scan();
+    utils.remove(fx);
+    utils.remove(flips);
+    animate(fx, {
+      power: [{ to: 0, duration: 230, ease: 'inQuart', delay: 120 }, { to: 1, duration: 520, ease: 'outBack(2.2)', delay: 140 }],
+      whirl: [{ to: 0, duration: 490 }, { to: 1, duration: 120 }, { to: 0, duration: 2300, ease: 'outCubic' }],
+      kickX: [{ to: stage.pointer.x * 0.45, duration: 200, ease: 'outQuad' }, { to: 0, duration: 1900, ease: 'outElastic(1, .45)' }],
+      kickY: [{ to: -stage.pointer.y * 0.35, duration: 200, ease: 'outQuad' }, { to: 0, duration: 1900, ease: 'outElastic(1, .45)' }],
+    });
+    flips.forEach((flip) => {
+      flip.v = 0;
+    });
+    animate(flips, { v: 1, duration: 1700, ease: 'outElastic(1, .7)', delay: stagger(260, { start: 520 }) });
+    // つぶれているあいだは下まで消しておき、立ち上がりに合わせて走査を始める。
+    animate(state, { reveal: [{ to: -RADIUS * 1.3, duration: 1, delay: 380 }, { to: RADIUS * 1.3, duration: 2100, ease: 'inOutQuad', delay: 110 }] });
   }
 
   if (!stage.reduced) {
@@ -254,7 +279,7 @@ export function mount(container, options = {}) {
     destroy() {
       clearInterval(glitchTimer);
       container.removeEventListener('click', reboot);
-      utils.remove([state, ...arcUniforms]);
+      utils.remove([state, fx, ...flips, ...arcUniforms]);
       stage.destroy();
     },
   };

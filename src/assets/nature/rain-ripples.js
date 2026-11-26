@@ -9,7 +9,7 @@ export const meta = {
   category: 'nature',
   libs: ['three'],
   description:
-    '静かな水面に雨粒が落ちて、波紋が広がっては消えます。ポインターを動かすと、通った跡にも波紋が立ちます。クリックすると大きな波紋が起きます。落ち着いた雰囲気のページの背景に向いています。',
+    '静かな水面に雨粒が落ちて、波紋が広がっては消えます。ポインターを動かすと、通った跡にも波紋が立ちます。クリックすると大粒のしずくが落ちます。大きな波紋のまわりに、跳ね上がった小さなしずくが時間差で輪になって落ち、真ん中にも跳ね返りの一滴が落ちます。波紋は画面の端で折り返して戻ってきます。落ち着いた雰囲気のページの背景に向いています。',
   params: {
     rain: { type: 'range', label: '雨の量', min: 0, max: 1, step: 0.05, default: 0.5 },
     speed: { type: 'range', label: '速さ', min: 0.2, max: 3, step: 0.1, default: 1 },
@@ -18,7 +18,7 @@ export const meta = {
   },
 };
 
-const MAX_DROPS = 8;
+const MAX_DROPS = 20;
 
 const fragmentShader = /* glsl */ `
 uniform float uTime;
@@ -102,8 +102,8 @@ export function mount(container, options = {}) {
   let last = { x: 0, y: 0 };
   let aspect = 1;
   const toSurface = () => ({ x: (stage.pointer.x * aspect) / 2, y: stage.pointer.y / 2 });
-  function addDrop(strength, at = toSurface()) {
-    drops[next].set(at.x, at.y, uniforms.uTime.value, strength);
+  function addDrop(strength, at = toSurface(), when = uniforms.uTime.value) {
+    drops[next].set(at.x, at.y, when, strength);
     next = (next + 1) % MAX_DROPS;
     last = at;
   }
@@ -127,12 +127,34 @@ export function mount(container, options = {}) {
     if (!rect.width || !rect.height) return;
     const nx = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     const ny = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
-    addDrop(1.6, { x: (nx * aspect) / 2, y: ny / 2 });
+    crown({ x: (nx * aspect) / 2, y: ny / 2 });
+  }
+  // 大粒のしずく。山場は大きな波紋、続いて王冠のように跳ねた小さなしずくが順に落ち、余韻として端からの折り返しが戻る。
+  function crown(at) {
+    const now = uniforms.uTime.value;
+    addDrop(1.7, at);
+    const turn = Math.random() * Math.PI * 2;
+    const beads = 6;
+    for (let i = 0; i < beads; i += 1) {
+      const angle = turn + (i / beads) * Math.PI * 2;
+      const reach = 0.1 + Math.random() * 0.07;
+      addDrop(0.55 + Math.random() * 0.25, { x: at.x + Math.cos(angle) * reach, y: at.y + Math.sin(angle) * reach }, now + 0.22 + i * 0.07 + Math.random() * 0.05);
+    }
+    // 真ん中に、跳ね返った一滴が遅れて落ちる。
+    addDrop(1.0, at, now + 0.75);
+    // 折り返し。端の向こうに鏡写しの波源を置くと、波が端に届いた頃に内側へ戻ってくる。
+    const half = aspect / 2;
+    addDrop(2.6, { x: (at.x >= 0 ? 2 * half : -2 * half) - at.x, y: at.y });
+    addDrop(2.6, { x: at.x, y: (at.y >= 0 ? 1 : -1) - at.y });
+    last = at;
   }
   container.addEventListener('pointerdown', splash);
+  // 一覧では、数秒おきに大粒のしずくを落として見せる。
+  const auto = p.preview && !stage.reduced ? setInterval(() => crown({ x: (Math.random() - 0.5) * aspect * 0.6, y: (Math.random() - 0.5) * 0.5 }), 4800) : 0;
 
   return {
     destroy() {
+      clearInterval(auto);
       container.removeEventListener('pointerdown', splash);
       stage.destroy();
     },

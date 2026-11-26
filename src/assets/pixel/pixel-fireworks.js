@@ -8,7 +8,7 @@ export const meta = {
   category: 'pixel',
   libs: ['animejs'],
   description:
-    '夜空に花火が打ち上がって開き、火の粉が重さで落ちながら消えていきます。下の水面には、揺れる映り込みが出ます。クリックした場所へ向けて 1 発打ち上げます。お祝いの画面や、夏の場面の背景に使えます。戻り値の launch() でも打ち上げられます。',
+    '夜空に花火が打ち上がって開き、火の粉が重さで落ちながら消えていきます。下の水面には、揺れる映り込みが出ます。クリックした場所へ向けて、仕掛け花火を 1 発打ち上げます。大きく開いたあと、まわりに小さな花火が時間差で 3 つ続けて咲き、最後に中心で白く光る芯がはじけます。お祝いの画面や、夏の場面の背景に使えます。戻り値の launch() でも打ち上げられます。',
   params: {
     palette: {
       type: 'select',
@@ -96,16 +96,26 @@ export function mount(container, options = {}) {
   const maxSparks = p.preview ? 380 : 900;
   const state = { flash: 0 };
   let rockets = [];
+  let queued = [];
   let sparks = [];
   let time = 0;
   let nextLaunch = 0.3;
   let horizon = 70;
   let destroyed = false;
 
-  function explode(x, y, colorIndex) {
+  function explode(x, y, colorIndex, scale = 1, finale = false) {
     const type = Math.floor(Math.random() * 3);
-    const amount = Math.min(Math.round(p.count * (p.preview ? 0.6 : 1)), maxSparks - sparks.length);
-    const reach = Math.max(26, horizon * 0.55);
+    const amount = Math.min(Math.round(p.count * (p.preview ? 0.6 : 1) * (scale < 1 ? 0.45 : 1)), maxSparks - sparks.length);
+    const reach = Math.max(26, horizon * 0.55) * scale;
+    if (finale) {
+      // 仕掛け花火。まわりに小さな花火を時間差で咲かせ、最後に芯をはじけさせる。
+      const turn = Math.random() * Math.PI * 2;
+      for (let i = 0; i < 3; i += 1) {
+        const angle = turn + (i / 3) * Math.PI * 2;
+        queued.push({ at: time + 0.32 + i * 0.17, x: x + Math.cos(angle) * reach * 0.8, y: Math.min(horizon - 6, y + Math.sin(angle) * reach * 0.6), color: colorIndex + 1 + i, scale: 0.5 });
+      }
+      queued.push({ at: time + 0.95, x, y, color: colorIndex, scale: 0.3 });
+    }
     for (let i = 0; i < amount; i += 1) {
       const angle = (i / amount) * Math.PI * 2 + Math.random() * 0.2;
       // 0 は球、1 は二重の輪、2 は長く垂れる柳。
@@ -131,7 +141,7 @@ export function mount(container, options = {}) {
     if (destroyed || reduced || rockets.length > 10) return;
     const targetX = Number.isFinite(x) ? x / view.scale : view.w * utils.random(0.14, 0.86, 2);
     const targetY = Number.isFinite(y) ? Math.min(horizon - 10, Math.max(6, y / view.scale)) : horizon * utils.random(0.16, 0.55, 2);
-    rockets.push({ x: targetX + utils.random(-6, 6), y: horizon, targetX, targetY, color: Math.floor(Math.random() * ramps.length) });
+    rockets.push({ x: targetX + utils.random(-6, 6), y: horizon, targetX, targetY, color: Math.floor(Math.random() * ramps.length), finale: Number.isFinite(x) });
   }
 
   function update(dt) {
@@ -144,7 +154,10 @@ export function mount(container, options = {}) {
         arrived.push(r);
         return false;
       });
-    for (const r of arrived) explode(r.x, r.y, r.color);
+    for (const r of arrived) explode(r.x, r.y, r.color, 1, r.finale);
+    const due = queued.filter((item) => item.at <= time);
+    queued = queued.filter((item) => item.at > time);
+    for (const item of due) explode(item.x, item.y, item.color, item.scale);
     const drag = Math.exp(-1.7 * dt);
     const pull = 24 * p.gravity;
     sparks = sparks

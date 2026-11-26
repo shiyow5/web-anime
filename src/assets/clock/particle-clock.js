@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { animate, utils } from 'animejs';
+import { animate, createTimer, utils } from 'animejs';
 import { createStage } from '../../lib/stage.js';
 import { resolveParams } from '../../lib/params.js';
 
@@ -9,7 +9,7 @@ export const meta = {
   category: 'clock',
   libs: ['three', 'animejs'],
   description:
-    '現在の時刻を、粒の集まりで表示します。数字が変わる桁だけ、粒がいったん散ってから次の数字に組み替わります。ポインターを近づけると粒が逃げます。',
+    '現在の時刻を、粒の集まりで表示します。数字が変わる桁だけ、粒がいったん散ってから次の数字に組み替わります。ポインターを近づけると粒が逃げます。タップすると、粒が触った点へいったん吸い寄せられてから渦を巻いて弾け飛び、近い桁から順に今の時刻へ組み直されます。',
   params: {
     seconds: { type: 'boolean', label: '秒を表示する', default: true },
     count: { type: 'range', label: '粒の数', min: 4000, max: 60000, step: 2000, default: 28000 },
@@ -72,6 +72,8 @@ uniform float uScale;
 uniform float uSize;
 uniform float uHover;
 uniform vec2 uPointer;
+uniform vec2 uTap;
+uniform float uBlast[${MAX_SLOTS}];
 attribute vec3 aTo;
 attribute vec4 aRand;
 attribute float aSlot;
@@ -85,6 +87,15 @@ void main(){
   float burst = sin(t * 3.14159265);
   p += (aRand.yzw - 0.5) * burst * 0.7;
   p.xy += vec2(sin(uTime * 1.4 + aRand.y * 40.0), cos(uTime * 1.1 + aRand.z * 40.0)) * 0.005;
+  // タップ。負の値で触った点へ吸い寄せ、正の値で渦を巻きながら外へ飛ばす。
+  float b = uBlast[int(aSlot)];
+  vec2 off = p.xy - uTap;
+  float ang = b * (aRand.z - 0.3) * 2.6;
+  off = mat2(cos(ang), -sin(ang), sin(ang), cos(ang)) * off;
+  off += normalize(off + 0.0001) * b * (0.25 + aRand.y * 1.5);
+  off *= 1.0 + min(b, 0.0) * 0.7;
+  p.xy = uTap + off;
+  p.z += (aRand.w - 0.5) * max(b, 0.0) * 2.4;
   vec2 away = p.xy - uPointer;
   float push = smoothstep(0.7, 0.0, length(away)) * uHover;
   p.xy += normalize(away + 0.0001) * push * 0.35;
@@ -93,7 +104,7 @@ void main(){
   gl_Position = projectionMatrix * mv;
   gl_PointSize = uSize * (0.6 + aRand.w * 0.9) / -mv.z;
   vTint = aRand.x;
-  vBurst = burst + push;
+  vBurst = burst + push + abs(b);
 }
 `;
 
@@ -136,6 +147,7 @@ export function mount(container, options = {}) {
   geometry.setAttribute('aRand', new THREE.BufferAttribute(new Float32Array(count * 4).map(() => Math.random()), 4));
 
   const mixes = Array.from({ length: MAX_SLOTS }, () => ({ v: stage.reduced ? 1 : 0 }));
+  const blasts = Array.from({ length: MAX_SLOTS }, () => ({ v: 0 }));
   const uniforms = {
     uMix: { value: mixes.map((m) => m.v) },
     uTime: { value: 0 },
@@ -143,6 +155,8 @@ export function mount(container, options = {}) {
     uSize: { value: 1 },
     uHover: { value: 0 },
     uPointer: { value: new THREE.Vector2() },
+    uTap: { value: new THREE.Vector2() },
+    uBlast: { value: new Array(MAX_SLOTS).fill(0) },
     uColorA: { value: new THREE.Color(p.colorA) },
     uColorB: { value: new THREE.Color(p.colorB) },
   };
@@ -185,6 +199,7 @@ export function mount(container, options = {}) {
     uniforms.uTime.value = time;
     mixes.forEach((mix, i) => {
       uniforms.uMix.value[i] = mix.v;
+      uniforms.uBlast.value[i] = blasts[i].v;
     });
     uniforms.uPointer.value.set((stage.pointer.sx * view.width) / 2, (stage.pointer.sy * view.height) / 2);
     const target = stage.pointer.inside ? 1 : 0;
@@ -193,6 +208,33 @@ export function mount(container, options = {}) {
     const text = clockText(new Date(), p.seconds);
     if (text !== shown) update(text);
   });
+
+  // タップ。触った点へ粒を吸い寄せてから弾き飛ばし、近い桁から順に組み直す。
+  function blast(x = 0, y = 0) {
+    if (stage.reduced || !ready) return;
+    const view = stage.viewport();
+    uniforms.uTap.value.set((x * view.width) / 2, (y * view.height) / 2);
+    const tapSlot = uniforms.uTap.value.x / uniforms.uScale.value / SLOT_WIDTH + (slots - 1) / 2;
+    utils.remove(blasts);
+    blasts.forEach((item, slot) => {
+      const far = Math.abs(slot - tapSlot);
+      animate(item, {
+        v: [
+          { to: -0.55, duration: 200, ease: 'outQuad' },
+          { to: 1, duration: 520, ease: 'outExpo' },
+          { to: 0.85, duration: 260 + far * 110, ease: 'linear' },
+          { to: 0, duration: 1000, ease: 'inOutQuart' },
+        ],
+        delay: far * 45,
+      });
+    });
+  }
+  const onPointerDown = (event) => {
+    const rect = container.getBoundingClientRect();
+    blast(((event.clientX - rect.left) / rect.width) * 2 - 1, -(((event.clientY - rect.top) / rect.height) * 2 - 1));
+  };
+  container.addEventListener('pointerdown', onPointerDown);
+  const auto = p.preview && !stage.reduced ? createTimer({ duration: 5600, loop: true, onLoop: () => blast(Math.random() - 0.5, 0) }) : null;
 
   // フォントの読み込みが終わってから描くと、数字の形が崩れない。
   (document.fonts?.ready ?? Promise.resolve()).then(() => {
@@ -204,7 +246,10 @@ export function mount(container, options = {}) {
   return {
     destroy() {
       destroyed = true;
+      auto?.pause();
+      container.removeEventListener('pointerdown', onPointerDown);
       utils.remove(mixes);
+      utils.remove(blasts);
       stage.destroy();
     },
   };

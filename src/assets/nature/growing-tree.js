@@ -8,7 +8,7 @@ export const meta = {
   category: 'nature',
   libs: ['animejs'],
   description:
-    '地面から幹が伸び、枝が線で描かれながら分かれていき、先から順に葉が芽吹きます。枝ぶりは乱数の種から手続きで作るので、種を変えると別の木になります。クリックするたびに春・夏・秋・冬と季節が移り、葉の色と空気が変わります。',
+    '地面から幹が伸び、枝が線で描かれながら分かれていき、先から順に葉が芽吹きます。枝ぶりは乱数の種から手続きで作るので、種を変えると別の木になります。クリックするたびに春・夏・秋・冬と季節が移ります。季節の変化は押した場所から波のように木全体へ広がり、散る葉は回りながら地面へ落ち、新しい葉は押した場所に近い枝から順に芽吹きます。',
   params: {
     seed: { type: 'range', label: '乱数の種', min: 1, max: 999, step: 1, default: 7 },
     depth: { type: 'range', label: '枝分かれの深さ', min: 4, max: 8, step: 1, default: 7 },
@@ -134,9 +134,10 @@ export function mount(container, options = {}) {
     .filter((_, i) => i % stride === 0)
     .map((spot, i) => {
       const size = 0.8 + rng() * 0.9;
+      const turn = Math.round(rng() * 360);
       const path = s('path', { class: 'ua-gt__leaf', d: LEAF_PATH });
-      const holder = s('g', { transform: `translate(${spot.x.toFixed(1)} ${spot.y.toFixed(1)}) rotate(${Math.round(rng() * 360)}) scale(${size.toFixed(2)})` }, path);
-      return { path, holder, tone: i % 3, chance: rng() };
+      const holder = s('g', { transform: `translate(${spot.x.toFixed(1)} ${spot.y.toFixed(1)}) rotate(${turn}) scale(${size.toFixed(2)})` }, path);
+      return { path, holder, tone: i % 3, chance: rng(), x: spot.x, y: spot.y, turn: (turn * Math.PI) / 180, size, shown: false };
     });
   const flecks = Array.from({ length: p.preview ? 9 : 16 }, () => s('ellipse', { class: 'ua-gt__tone', rx: 4.5, ry: 2.6, opacity: 0 }));
   const fleckGroup = s('g', { class: 'ua-gt__tone' }, flecks);
@@ -154,7 +155,7 @@ export function mount(container, options = {}) {
   const leafTarget = (leaf, season) => (leaf.chance < season.keep ? 1 : 0);
 
   // 季節ごとの色を当てる。withMotion が真なら、葉の出入りを動かす。
-  function applySeason(withMotion) {
+  function applySeason(withMotion, origin) {
     const season = SEASONS[seasonIndex];
     root.style.setProperty('--ua-bg', season.bg);
     glow.style.fill = season.glow;
@@ -168,18 +169,61 @@ export function mount(container, options = {}) {
     sub.textContent = `${season.sub} · SEED ${Math.round(p.seed)}`;
     for (const leaf of leaves) if (season.keep > 0) leaf.path.style.fill = season.leaves[leaf.tone];
     if (!withMotion) {
-      for (const leaf of leaves) leaf.path.style.transform = `scale(${leafTarget(leaf, season)})`;
+      for (const leaf of leaves) {
+        leaf.shown = leafTarget(leaf, season) === 1;
+        leaf.path.style.transform = `scale(${leaf.shown ? 1 : 0})`;
+      }
       return;
     }
-    animate(
-      leaves.map((leaf) => leaf.path),
-      {
-        scale: (_, i) => leafTarget(leaves[i], season),
+    // 押した場所（木の座標）からの距離で順番を決める。近い葉から変わり、波が木全体へ広がる。
+    const from = origin ?? { x: BASE.x, y: BASE.y - 320 };
+    const paths = leaves.map((leaf) => leaf.path);
+    const wave = leaves.map((leaf) => ms(Math.hypot(leaf.x - from.x, leaf.y - from.y) * 3.2) + utils.random(0, ms(160)));
+    const falls = leaves.map((leaf) => leaf.shown && leafTarget(leaf, season) === 0);
+    // 散る葉は、葉の向きに合わせて「画面の下」へ落ちる量を求める。地面の近くまで落ちてから消える。
+    const drop = leaves.map((leaf, i) => (falls[i] ? Math.max(40, BASE.y - leaf.y) / leaf.size : 0));
+    utils.remove(paths);
+    const falling = leaves.map((leaf, i) => ({ leaf, i })).filter(({ i }) => falls[i]);
+    const staying = leaves.map((leaf, i) => ({ leaf, i })).filter(({ i }) => !falls[i]);
+    if (falling.length) {
+      animate(falling.map(({ leaf }) => leaf.path), {
+        translateX: (_, k) => Math.sin(falling[k].leaf.turn) * drop[falling[k].i] + utils.random(-30, 30),
+        translateY: (_, k) => Math.cos(falling[k].leaf.turn) * drop[falling[k].i],
+        rotate: () => utils.random(-260, 260),
+        scale: [
+          { to: 1, duration: ms(900) },
+          { to: 0, duration: ms(300) },
+        ],
+        duration: ms(1200),
+        delay: (_, k) => wave[falling[k].i],
+        ease: 'inQuad',
+      });
+    }
+    if (staying.length) {
+      animate(staying.map(({ leaf }) => leaf.path), {
+        translateX: { to: 0, duration: 1 },
+        translateY: { to: 0, duration: 1 },
+        rotate: { to: 0, duration: 1 },
+        scale: (_, k) => leafTarget(staying[k].leaf, season),
         duration: ms(700),
-        delay: () => utils.random(0, ms(800)),
-        ease: season.keep > 0 ? 'outBack(2.4)' : 'inQuad',
-      },
-    );
+        delay: (_, k) => wave[staying[k].i],
+        ease: 'outBack(2.4)',
+      });
+    }
+    leaves.forEach((leaf) => {
+      leaf.shown = leafTarget(leaf, season) === 1;
+    });
+  }
+
+  // 画面の位置を、木を作った座標（縮める前）に直す。
+  function toTree(event) {
+    if (!event || !Number.isFinite(event.clientX)) return undefined;
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width || !rect.height) return undefined;
+    const scale = Math.min(rect.width / 600, rect.height / 600);
+    const vx = (event.clientX - rect.left - (rect.width - 600 * scale) / 2) / scale;
+    const vy = (event.clientY - rect.top - (rect.height - 600 * scale)) / scale;
+    return { x: BASE.x + (vx - BASE.x) / fit, y: BASE.y + (vy - BASE.y) / fit };
   }
 
   if (reduced) {
@@ -192,6 +236,7 @@ export function mount(container, options = {}) {
     for (const leaf of leaves) leaf.path.style.transform = 'scale(0)';
     applySeason(false);
     for (const leaf of leaves) leaf.path.style.transform = 'scale(0)';
+    for (const leaf of leaves) leaf.shown = leafTarget(leaf, SEASONS[seasonIndex]) === 1;
 
     // 登場: 幹から枝先へ、深さの順に線が伸びる。伸びきった枝から葉が開く。
     animate(branchEls, {
@@ -233,17 +278,18 @@ export function mount(container, options = {}) {
     disposer.timeout(() => root.classList.add('ua-gt--smooth'), 60);
   }
 
-  function nextSeason() {
+  function nextSeason(event) {
     seasonIndex = (seasonIndex + 1) % SEASONS.length;
-    applySeason(!reduced);
+    applySeason(!reduced, toTree(event));
   }
   disposer.listen(root, 'click', nextSeason);
-  if (p.preview && !reduced) disposer.interval(nextSeason, 4600);
+  if (p.preview && !reduced) disposer.interval(() => nextSeason(), 4600);
 
   return {
     nextSeason,
     destroy() {
       disposer.run();
+      utils.remove(leaves.map((leaf) => leaf.path));
       removeRoot(root);
     },
   };

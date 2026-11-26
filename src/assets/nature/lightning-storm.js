@@ -8,7 +8,7 @@ export const meta = {
   category: 'nature',
   libs: ['animejs'],
   description:
-    '雨の降る夜空に、枝分かれする稲妻が走ります。稲妻の形は毎回、手続きで作ります。落ちた瞬間に空が明るくなり、重なった雲と山の輪郭が浮かび上がります。クリックすると、その場所へ雷が落ちます。嵐の場面や、緊張感を出したい画面の背景に使えます。',
+    '雨の降る夜空に、枝分かれする稲妻が走ります。稲妻の形は毎回、手続きで作ります。落ちた瞬間に空が明るくなり、重なった雲と山の輪郭が浮かび上がります。クリックすると、その場所へ雷が落ちます。まず細い先駆けの光が雲から枝を伸ばし、届いた瞬間に太い稲妻が走って、落ちた場所で火花が散り、光の輪が広がります。少し遅れて雷鳴で画面が震え、雨がしばらく強まります。嵐の場面や、緊張感を出したい画面の背景に使えます。',
   params: {
     frequency: { type: 'range', label: '雷の頻度', min: 0.3, max: 3, step: 0.1, default: 1 },
     rain: { type: 'range', label: '雨の量', min: 0, max: 800, step: 20, default: 360 },
@@ -97,7 +97,8 @@ export function mount(container, options = {}) {
   let strikeTimer = 0;
   let destroyed = false;
   const STEP = 3;
-  const state = { reveal: reduced ? 1 : 0 };
+  const state = { reveal: reduced ? 1 : 0, shake: 0, downpour: 0 };
+  let sparks = [];
   const drops = Array.from({ length: dropCount }, () => ({ x: Math.random(), y: Math.random(), z: 0.3 + Math.random() * 0.7 }));
   const puffs = CLOUD_ROWS.map((row, r) =>
     Array.from({ length: 16 }, (_, i) => ({ x: (i + hash(r * 50 + i) * 0.7) / 16, dy: (hash(r * 90 + i) - 0.5) * 0.07, size: 0.75 + hash(r * 130 + i) * 0.6 })),
@@ -134,21 +135,66 @@ export function mount(container, options = {}) {
     const hitY = Number.isFinite(y) ? y : nearAt(hitX) + 2;
     const fromX = hitX + (Math.random() - 0.5) * width * 0.3;
     const fromY = height * 0.14;
-    const bolt = { lines: makeBolt(fromX, fromY, hitX, hitY, p.branches, Math.max(1.4, unit * 0.006), 0, []), alpha: 1, fromX, fromY, hitX, hitY };
+    const bolt = { lines: makeBolt(fromX, fromY, hitX, hitY, p.branches, Math.max(1.4, unit * 0.006), 0, []), alpha: 1, grow: 1, ring: 1, fromX, fromY, hitX, hitY };
     bolts.push(bolt);
     if (reduced) return;
-    // 光ってから、何度かまたたいて消える。
+    // 準備: 細い先駆けの光が、雲から地面へ枝を伸ばす。
+    const LEAD = 240;
+    bolt.alpha = 0.28;
+    bolt.grow = 0;
+    bolt.ring = 0;
+    animate(bolt, { grow: 1, duration: LEAD, ease: 'inQuad', onComplete: () => land(bolt) });
+    // 山場: 届いた瞬間に強く光り、何度かまたたいて消える。
     animate(bolt, {
       alpha: [
+        { to: 1, duration: 30, ease: 'linear' },
         { to: 0.4, duration: 80, ease: 'linear' },
         { to: 1, duration: 60, ease: 'linear' },
         { to: 0.75, duration: 220, ease: 'outQuad' },
         { to: 0, duration: 1400, ease: 'inQuad' },
       ],
+      delay: LEAD,
       onComplete() {
         bolts = bolts.filter((item) => item !== bolt);
       },
     });
+    animate(bolt, { ring: 1, duration: 900, delay: LEAD, ease: 'outCubic' });
+  }
+
+  // 落ちた場所で火花が散る。余韻として、少し遅れて雷鳴で画面が震え、雨が強まる。
+  function land(bolt) {
+    if (destroyed) return;
+    const amount = p.preview ? 8 : 16;
+    for (let i = 0; i < amount; i += 1) {
+      const angle = -Math.PI / 2 + (Math.random() - 0.5) * 2.4;
+      const speed = unit * (0.25 + Math.random() * 0.55);
+      sparks.push({ x: bolt.hitX, y: bolt.hitY, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, life: 0.5 + Math.random() * 0.6, age: 0 });
+    }
+    if (sparks.length > 80) sparks = sparks.slice(-80);
+    animate(state, {
+      shake: [
+        { to: 1, duration: 60, ease: 'linear' },
+        { to: 0, duration: 800, ease: 'outQuad' },
+      ],
+      delay: 320,
+    });
+    animate(state, {
+      downpour: [
+        { to: 1, duration: 500, ease: 'outQuad' },
+        { to: 0, duration: 2600, ease: 'inOutSine' },
+      ],
+      delay: 320,
+    });
+  }
+
+  function stepSparks(dt) {
+    for (const spark of sparks) {
+      spark.age += dt;
+      spark.vy += unit * 1.6 * dt;
+      spark.x += spark.vx * dt;
+      spark.y += spark.vy * dt;
+    }
+    sparks = sparks.filter((spark) => spark.age < spark.life);
   }
 
   function scheduleStrike(delay) {
@@ -191,10 +237,16 @@ export function mount(container, options = {}) {
     for (const [scale, color, alpha] of [[9, p.glow, 0.16], [4, p.glow, 0.34], [1, p.bolt, 1]]) {
       ctx.strokeStyle = rgba(color, alpha * bolt.alpha);
       for (const line of bolt.lines) {
+        // 伸びている途中は、高さが届いた所までを描く。枝も上から順に現れる。
+        const reach = bolt.fromY + (bolt.hitY - bolt.fromY) * bolt.grow;
+        if (bolt.grow < 1 && line.points[0].y > reach) continue;
         ctx.lineWidth = line.width * scale;
         ctx.beginPath();
         ctx.moveTo(line.points[0].x, line.points[0].y);
-        for (const point of line.points) ctx.lineTo(point.x, point.y);
+        for (const point of line.points) {
+          if (bolt.grow < 1 && point.y > reach) break;
+          ctx.lineTo(point.x, point.y);
+        }
         ctx.stroke();
       }
     }
@@ -208,6 +260,9 @@ export function mount(container, options = {}) {
     sky.addColorStop(1, mix('#241b4c', '#8c7ad6', flash * 0.6));
     ctx.fillStyle = sky;
     ctx.fillRect(0, 0, width, height);
+    // 雷鳴の震え。空を塗ったあとで全体をずらすので、端にすき間は出ない。
+    ctx.save();
+    if (state.shake > 0.002) ctx.translate((Math.random() - 0.5) * unit * 0.022 * state.shake, (Math.random() - 0.5) * unit * 0.022 * state.shake);
 
     // 稲妻の根元を中心に、空が明るくなる。
     if (lead) {
@@ -234,12 +289,12 @@ export function mount(container, options = {}) {
     // 雨。奥行きで 3 段階に分け、近い雨ほど長く、濃く描く。
     const slant = p.wind * 0.4;
     for (let band = 0; band < 3; band += 1) {
-      ctx.strokeStyle = `rgba(190,205,255,${((0.12 + band * 0.11) * (1 + flash * 1.4) * state.reveal).toFixed(3)})`;
-      ctx.lineWidth = 0.7 + band * 0.45;
+      ctx.strokeStyle = `rgba(190,205,255,${Math.min(1, (0.12 + band * 0.11) * (1 + flash * 1.4 + state.downpour * 0.9) * state.reveal).toFixed(3)})`;
+      ctx.lineWidth = (0.7 + band * 0.45) * (1 + state.downpour * 0.5);
       ctx.beginPath();
       for (const drop of drops) {
         if (Math.min(2, Math.floor((drop.z - 0.3) / 0.234)) !== band) continue;
-        const len = height * 0.035 * (drop.z + 0.35);
+        const len = height * 0.035 * (drop.z + 0.35) * (1 + state.downpour * 0.8);
         const x = drop.x * (width + height * Math.abs(slant)) - (slant > 0 ? height * slant : 0) + drop.y * height * slant;
         const y = drop.y * height;
         ctx.moveTo(x, y);
@@ -267,10 +322,28 @@ export function mount(container, options = {}) {
       hit.addColorStop(0.3, rgba(p.glow, bolt.alpha * 0.4));
       hit.addColorStop(1, rgba(p.glow, 0));
       ctx.fillStyle = hit;
-      ctx.fillRect(bolt.hitX - r, bolt.hitY - r, r * 2, r * 2);
+      if (bolt.grow >= 1) ctx.fillRect(bolt.hitX - r, bolt.hitY - r, r * 2, r * 2);
+      // 落ちた場所から、地面に沿って光の輪が広がる。
+      if (bolt.ring > 0 && bolt.ring < 1) {
+        ctx.strokeStyle = rgba(p.glow, (1 - bolt.ring) * 0.8);
+        ctx.lineWidth = Math.max(1, unit * 0.006 * (1 - bolt.ring));
+        ctx.beginPath();
+        ctx.ellipse(bolt.hitX, bolt.hitY, unit * 0.3 * bolt.ring, unit * 0.075 * bolt.ring, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+    for (const spark of sparks) {
+      const k = 1 - spark.age / spark.life;
+      ctx.strokeStyle = rgba(p.bolt, k);
+      ctx.lineWidth = Math.max(1, unit * 0.004 * k);
+      ctx.beginPath();
+      ctx.moveTo(spark.x, spark.y);
+      ctx.lineTo(spark.x - spark.vx * 0.035, spark.y - spark.vy * 0.035);
+      ctx.stroke();
     }
     ctx.globalCompositeOperation = 'source-over';
     drawClouds(CLOUD_ROWS[2], 2, t, flash);
+    ctx.restore();
 
     const edge = ctx.createRadialGradient(width / 2, height / 2, unit * 0.4, width / 2, height / 2, Math.hypot(width, height) * 0.62);
     edge.addColorStop(0, 'rgba(3,2,12,0)');
@@ -315,12 +388,13 @@ export function mount(container, options = {}) {
         const dt = Math.min(0.05, (current - last) / 1000);
         last = current;
         for (const drop of drops) {
-          drop.y += dt * (0.9 + drop.z * 1.5);
+          drop.y += dt * (0.9 + drop.z * 1.5) * (1 + state.downpour * 0.7);
           if (drop.y > 1) {
             drop.y -= 1;
             drop.x = Math.random();
           }
         }
+        stepSparks(dt);
         draw(now());
       },
     });

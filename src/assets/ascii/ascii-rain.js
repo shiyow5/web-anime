@@ -8,7 +8,7 @@ export const meta = {
   category: 'ascii',
   libs: ['animejs'],
   description:
-    '細い線の雨が降り、地面に落ちた場所で文字の輪が広がって消えます。遠くの雨は淡く短く、手前の雨は濃く長く描いて奥行きを出しています。ポインターを左右に動かすと風向きが変わり、クリックした場所には大きな波紋が立ちます。落ち着いた背景に使えます。',
+    '細い線の雨が降り、地面に落ちた場所で文字の輪が広がって消えます。遠くの雨は淡く短く、手前の雨は濃く長く描いて奥行きを出しています。ポインターを左右に動かすと風向きが変わり、クリックすると、その場所の水たまりに大粒が落ちます。大きな波紋のまわりに、跳ねたしずくの小さな波紋が時間差で輪になって立ち、最後に真ん中へ跳ね返りの一滴が落ちます。落ち着いた背景に使えます。',
   params: {
     color: { type: 'color', label: '雨の色', default: '#8fa6cf' },
     accent: { type: 'color', label: '波紋の色', default: '#dcecff' },
@@ -233,7 +233,21 @@ export function mount(container, options = {}) {
     const local = localPointer(event, root);
     const row = clamp(Math.floor(local.y * g.rows), horizon + 2, g.rows - 2);
     const depth = (row - horizon) / Math.max(1, g.rows - horizon);
-    addRipple(local.x * g.cols, row, clamp(depth, 0.3, 1), 2.2);
+    if (reduced) return;
+    const x = local.x * g.cols;
+    const d = clamp(depth, 0.3, 1);
+    addRipple(x, row, d, 2.2);
+    // 跳ねたしずく。左右に広く、奥行きには浅く散って、順に落ちる。
+    const beads = 6;
+    for (let i = 0; i < beads; i += 1) {
+      const angle = (i / beads) * Math.PI * 2 + Math.random() * 0.5;
+      const reach = (5 + Math.random() * 5) * (0.5 + d);
+      disposer.timeout(() => {
+        if (!g.cols) return;
+        addRipple(x + Math.cos(angle) * reach, clamp(Math.round(row + Math.sin(angle) * reach * 0.3), horizon + 2, g.rows - 2), d, 0.75);
+      }, 200 + i * 70);
+    }
+    disposer.timeout(() => addRipple(x, row, d, 1.3), 720);
   });
 
   let last = performance.now();

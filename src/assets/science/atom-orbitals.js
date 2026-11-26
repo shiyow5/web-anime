@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { animate, utils } from 'animejs';
+import { animate, createTimer, utils } from 'animejs';
 import { createStage } from '../../lib/stage.js';
 import { resolveParams } from '../../lib/params.js';
 import { h, injectStyle } from '../../lib/dom.js';
@@ -10,7 +10,7 @@ export const meta = {
   category: 'science',
   libs: ['three', 'animejs'],
   description:
-    '原子核のまわりで電子が見つかる確率を、点の濃さで描きます。点は水素型の波動関数（1s・2s・2p・3s）の確率分布から選び、殻ごとの広がりはスレーターの規則で求めた有効核電荷で決めています。元素を選ぶと電子の配置が変わり、断面にすると 2s の節や 2p のくびれが見えます。',
+    '原子核のまわりで電子が見つかる確率を、点の濃さで描きます。点は水素型の波動関数（1s・2s・2p・3s）の確率分布から選び、殻ごとの広がりはスレーターの規則で求めた有効核電荷で決めています。元素を選ぶと電子の配置が変わり、断面にすると 2s の節や 2p のくびれが見えます。タップすると、外から光の輪が原子核へ吸い込まれ、電子の雲が白く光りながら外の軌道へ一気に跳び上がります。しばらく励起したままゆらぎ、元の軌道へ落ちるときに光の輪を 2 つ放って静まります。',
   params: {
     element: {
       type: 'select',
@@ -128,12 +128,17 @@ uniform float uSize;
 uniform float uTime;
 uniform float uGrow;
 uniform float uView;
+uniform float uExcite;
 attribute vec3 aColor;
 attribute float aSeed;
 varying vec3 vColor;
 varying float vAlpha;
 void main(){
-  vec4 mv = modelViewMatrix * vec4(position * uGrow, 1.0);
+  // 励起。点ごとに少しずつ時間をずらして、外の軌道へ跳ばす。
+  float jump = clamp(uExcite * 1.5 - aSeed * 0.5, 0.0, 1.0);
+  jump = jump * jump * (3.0 - 2.0 * jump);
+  float swell = 1.0 + jump * (0.5 + aSeed * 0.55) + jump * 0.05 * sin(uTime * 9.0 + aSeed * 40.0);
+  vec4 mv = modelViewMatrix * vec4(position * uGrow * swell, 1.0);
   vec4 centre = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
   float front = mv.z - centre.z;
   float cut = 1.0;
@@ -141,8 +146,8 @@ void main(){
   else if (uView > 0.5) cut = smoothstep(0.03, -0.03, front);
   // 点をまたたかせて、測るたびに違う場所で見つかる様子を表す。
   float twinkle = 0.6 + 0.4 * sin(uTime * (1.0 + aSeed * 3.0) + aSeed * 60.0);
-  vAlpha = cut * twinkle;
-  vColor = aColor;
+  vAlpha = cut * mix(twinkle, 1.0, jump);
+  vColor = mix(aColor, vec3(1.0), jump * 0.55);
   gl_Position = projectionMatrix * mv;
   gl_PointSize = max(1.8, uSize * (0.7 + aSeed * 0.6) / -mv.z);
 }
@@ -262,6 +267,7 @@ export function mount(container, options = {}) {
     uTime: { value: 0 },
     uGrow: { value: stage.reduced ? 1 : 0 },
     uView: { value: { cloud: 0, half: 1, section: 2 }[p.view] },
+    uExcite: { value: 0 },
     uOpacity: { value: Math.min(1, 40000 / total) * (p.view === 'cloud' ? 0.6 : 0.9) },
   };
   const cloud = new THREE.Points(
@@ -277,6 +283,15 @@ export function mount(container, options = {}) {
   atom.rotation.set(0.45, 0.6, 0.12);
   const root = new THREE.Group();
   root.add(atom);
+  // 光子を表す輪。吸い込まれる 1 本と、放たれる 2 本。
+  const photonMaterial = () => new THREE.MeshBasicMaterial({ color: colors['2p'], transparent: true, opacity: 0, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide });
+  const photons = [0, 1, 2].map((index) => {
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.965, 1, 96), photonMaterial());
+    if (index === 2) ring.rotation.x = Math.PI / 2.6;
+    root.add(ring);
+    return ring;
+  });
+  const fx = { excite: 0, absorb: 0, absorbGlow: 0, emit: 0, emitGlow: 0, core: 0, kickX: 0, kickY: 0 };
   stage.scene.add(root);
 
   // 説明の表示。
@@ -307,15 +322,49 @@ export function mount(container, options = {}) {
   });
   stage.onFrame((time, dt) => {
     uniforms.uTime.value = time;
-    atom.rotation.y += dt * p.spin;
-    root.rotation.x = -stage.pointer.sy * 0.6;
-    root.rotation.y = stage.pointer.sx * 0.8;
+    atom.rotation.y += dt * p.spin * (1 + fx.excite * 4);
+    root.rotation.x = -stage.pointer.sy * 0.6 + fx.kickY;
+    root.rotation.y = stage.pointer.sx * 0.8 + fx.kickX;
+    uniforms.uExcite.value = fx.excite;
+    nucleus.scale.setScalar(1 + fx.core * 2.2);
+    photons[0].scale.setScalar(Math.max(0.02, 2.7 * (1 - fx.absorb)));
+    photons[0].material.opacity = fx.absorbGlow * 0.9;
+    photons[1].scale.setScalar(0.1 + fx.emit * 3.1);
+    photons[2].scale.setScalar(0.1 + fx.emit * 2.5);
+    photons[1].material.opacity = fx.emitGlow * 0.85;
+    photons[2].material.opacity = fx.emitGlow * 0.55;
   });
+
+  // 光を吸って励起する → 外の軌道でゆらぐ → 光を出して元の軌道へ落ちる。
+  function excite() {
+    if (stage.reduced) return;
+    const ABSORB = 300;
+    const HOLD = 850;
+    utils.remove(fx);
+    fx.absorb = 0;
+    fx.emit = 0;
+    animate(fx, {
+      absorb: { to: 1, duration: ABSORB, ease: 'inQuad' },
+      absorbGlow: [{ to: 1, duration: 100 }, { to: 1, duration: ABSORB - 160 }, { to: 0, duration: 60 }],
+      core: [{ to: 0, duration: ABSORB - 60 }, { to: 1, duration: 100, ease: 'outQuad' }, { to: 0, duration: 900, ease: 'outElastic(1, .4)' }],
+      excite: [{ to: -0.06, duration: ABSORB, ease: 'inQuad' }, { to: 1, duration: 260, ease: 'outExpo' }, { to: 1, duration: HOLD }, { to: 0, duration: 520, ease: 'inOutCubic' }],
+      emit: [{ to: 0, duration: ABSORB + 260 + HOLD + 200 }, { to: 1, duration: 1300, ease: 'outQuart' }],
+      emitGlow: [{ to: 0, duration: ABSORB + 260 + HOLD + 200 }, { to: 1, duration: 90 }, { to: 0, duration: 1200, ease: 'inQuad' }],
+      kickX: [{ to: stage.pointer.x * 0.5, duration: 200, ease: 'outQuad' }, { to: 0, duration: 2000, ease: 'outElastic(1, .45)' }],
+      kickY: [{ to: -stage.pointer.y * 0.4, duration: 200, ease: 'outQuad' }, { to: 0, duration: 2000, ease: 'outElastic(1, .45)' }],
+    });
+  }
+  container.addEventListener('pointerdown', excite);
+  const auto = p.preview && !stage.reduced ? createTimer({ duration: 5600, loop: true, onLoop: excite }) : null;
 
   if (!stage.reduced) animate(uniforms.uGrow, { value: [0, 1], duration: 1800, ease: 'outExpo' });
 
   return {
+    excite,
     destroy() {
+      auto?.pause();
+      container.removeEventListener('pointerdown', excite);
+      utils.remove(fx);
       utils.remove(uniforms.uGrow);
       hud.remove();
       stage.destroy();

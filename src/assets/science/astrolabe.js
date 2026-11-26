@@ -10,7 +10,7 @@ export const meta = {
   category: 'science',
   libs: ['three', 'animejs'],
   description:
-    '天体の高さを測る円盤の道具を、真鍮色の細い線で描きました。目盛りの母盤、透かし彫りの星図の輪、表の定規、裏の照準の棒が同じ軸の上で別々の速さで回り、上の吊り輪は立ったまま自分の軸で回ります。全体はゆっくり裏返りながら傾き、クリックすると星図の輪が勢いよく回ります。緯度を変えると、高度の線の形が変わります。',
+    '天体の高さを測る円盤の道具を、真鍮色の細い線で描きました。目盛りの母盤、透かし彫りの星図の輪、表の定規、裏の照準の棒が同じ軸の上で別々の速さで回り、上の吊り輪は立ったまま自分の軸で回ります。全体はゆっくり裏返りながら傾き、クリックすると、重なっていた円盤が 1 枚ずつ前後に離れて間が開き、星図の輪が一晩ぶんを早回しするように勢いよく回ります。定規が弾かれ、裏の照準の棒は触った側へ振れて狙いを付け、最後に円盤が奥から順にかちりと重なり直します。緯度を変えると、高度の線の形が変わります。',
   params: {
     brass: { type: 'color', label: '真鍮の色', default: '#d9a441' },
     pale: { type: 'color', label: '明るい線の色', default: '#ffe9b0' },
@@ -308,7 +308,10 @@ export function mount(container, options = {}) {
     { object: alidade, z: -0.17, from: -2.8 },
   ];
   const enter = layers.map(() => ({ e: stage.reduced ? 1 : 0 }));
-  const push = { rete: 0, rule: 0 };
+  const push = { rete: 0, rule: 0, alidade: 0 };
+  // クリックで層を前後に離す量。
+  const spreads = layers.map(() => ({ v: 0 }));
+  const SPREAD = [-0.1, -0.3, 0.3, 0.62, -0.62];
   let reteTarget = 0;
   let phase = 0;
   let flip = 0.9;
@@ -324,13 +327,13 @@ export function mount(container, options = {}) {
     // 登場のときは、層ごとに前後の離れた場所から、回りながら重なる。
     layers.forEach((layer, i) => {
       const e = enter[i].e;
-      layer.object.position.z = layer.z + (1 - e) * layer.from;
+      layer.object.position.z = layer.z + (1 - e) * layer.from + spreads[i].v * SPREAD[i];
       layer.object.scale.set(Math.max(0.001, e), Math.max(0.001, e), layer.object === alidade ? -1 : 1);
     });
     mater.rotation.z = phase * 0.05 + (1 - enter[1].e) * 1.5;
     rete.rotation.z = -phase * 0.21 + push.rete - (1 - enter[2].e) * 2.5;
     rule.rotation.z = 0.5 + phase * 0.37 + push.rule + (1 - enter[3].e) * 3;
-    alidade.rotation.z = -0.4 - phase * 0.29 - (1 - enter[4].e) * 3;
+    alidade.rotation.z = -0.4 - phase * 0.29 + push.alidade - (1 - enter[4].e) * 3;
     shackle.rotation.y = HALF + phase * 0.9;
     hanger.rotation.y = -phase * 0.6;
     hanger.rotation.z = Math.sin(phase * 1.3) * 0.22;
@@ -346,8 +349,17 @@ export function mount(container, options = {}) {
     if (stage.reduced) return;
     reteTarget -= TAU * 0.75;
     utils.remove(push);
-    animate(push, { rete: reteTarget, duration: 2600, ease: 'outExpo' });
-    animate(push, { rule: [push.rule + 0.9, push.rule], duration: 1800, ease: 'outElastic(1, .32)' });
+    utils.remove(spreads);
+    // 層が離れる → 星図の輪が回り、定規と照準が振れる → 奥から順に重なり直す。
+    animate(spreads, {
+      v: [{ to: 1, duration: 420, ease: 'outBack(2)' }, { to: 0, duration: 700, ease: 'outBounce', delay: 1100 }],
+      delay: stagger(70),
+    });
+    animate(push, {
+      rete: [{ to: push.rete + 0.18, duration: 220, ease: 'outQuad' }, { to: reteTarget, duration: 2500, ease: 'outExpo' }],
+      rule: [{ to: push.rule + 0.9, duration: 200, ease: 'outQuad', delay: 220 }, { to: push.rule, duration: 1800, ease: 'outElastic(1, .32)' }],
+      alidade: { to: push.alidade + (stage.pointer.x < 0 ? 1 : -1) * 1.25, duration: 1500, ease: 'outElastic(1, .55)', delay: 220 },
+    });
   }
   container.addEventListener('pointerdown', turn);
 
@@ -357,7 +369,7 @@ export function mount(container, options = {}) {
     turn,
     destroy() {
       container.removeEventListener('pointerdown', turn);
-      utils.remove([push, ...enter]);
+      utils.remove([push, ...enter, ...spreads]);
       stage.destroy();
     },
   };

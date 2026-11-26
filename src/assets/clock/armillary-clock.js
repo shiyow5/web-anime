@@ -10,7 +10,7 @@ export const meta = {
   category: 'clock',
   libs: ['three', 'animejs'],
   description:
-    '時・分・秒の輪が入れ子になり、それぞれ別の軸で回る渾天儀の時計です。輪には目盛りと数字が刻まれ、輪の上を進む白い玉がいまの時刻を指し、中央には数字でも時刻が出ます。ポインターで全体が傾き、クリックすると 3 本の輪が 1 回転して元の向きに戻ります。',
+    '時・分・秒の輪が入れ子になり、それぞれ別の軸で回る渾天儀の時計です。輪には目盛りと数字が刻まれ、輪の上を進む白い玉がいまの時刻を指し、中央には数字でも時刻が出ます。ポインターで全体が傾き、クリックすると、輪がいったん逆へ引かれてから、秒の輪 3 回転・分の輪 2 回転・時の輪 1 回転の順に走り出し、白い玉も輪の上を早回しで周回して、内側の輪から順に減速して今の時刻に収まります。全体は触った方向へ傾いて揺れ戻ります。',
   params: {
     gold: { type: 'color', label: '金の色', default: '#e9b44c' },
     white: { type: 'color', label: '白の色', default: '#fff4dc' },
@@ -206,7 +206,9 @@ export function mount(container, options = {}) {
 
   const enter = [0, 1, 2, 3].map(() => ({ e: stage.reduced ? 1 : 0 }));
   const hand = { second: 0, pulse: 0 };
-  const flourish = { v: 0 };
+  // クリックでの早回し。秒・分・時の輪ごとの進み具合（0〜1）と、触った方向への傾き。
+  const flourish = [{ v: 0 }, { v: 0 }, { v: 0 }];
+  const kick = { x: 0, y: 0 };
   let target = 0;
   let lastSecond = -1;
   let phase = 0;
@@ -242,34 +244,49 @@ export function mount(container, options = {}) {
     phase += dt * p.speed;
     const now = syncClock(false);
     const fractions = ringFractions(now);
-    markers.hour.group.rotation.z = angleAt(fractions.hour);
-    markers.minute.group.rotation.z = angleAt(fractions.minute);
-    markers.second.group.rotation.z = angleAt(hand.second / 60);
+    const [fSecond, fMinute, fHour] = flourish.map((item) => item.v);
+    markers.hour.group.rotation.z = angleAt(fractions.hour + fHour);
+    markers.minute.group.rotation.z = angleAt(fractions.minute + fMinute * 2);
+    markers.second.group.rotation.z = angleAt(hand.second / 60 + fSecond * 3);
     markers.second.bead.scale.setScalar(1 + hand.pulse * 0.9);
 
     // 登場のときは、輪ごとに別の向きから回り込んで定位置に収まる。
-    const turn = flourish.v * TAU;
     const [e0, e1, e2, e3] = enter.map((state) => state.e);
     frame.scale.setScalar(Math.max(0.001, e0));
     frame.rotation.z = (1 - e0) * -1.2;
     hourGimbal.scale.setScalar(Math.max(0.001, e1));
-    hourGimbal.rotation.y = 0.55 + phase * 0.13 + (1 - e1) * 2.6 + turn;
+    hourGimbal.rotation.y = 0.55 + phase * 0.13 + (1 - e1) * 2.6 + fHour * TAU;
     minuteGimbal.scale.setScalar(Math.max(0.001, e2));
-    minuteGimbal.rotation.x = 0.95 + phase * 0.21 - (1 - e2) * 2.6 - turn;
+    minuteGimbal.rotation.x = 0.95 + phase * 0.21 - (1 - e2) * 2.6 - fMinute * TAU * 2;
     secondGimbal.scale.setScalar(Math.max(0.001, e3));
-    secondGimbal.quaternion.copy(spinQuat.setFromAxisAngle(axisD, 2.1 + phase * 0.34 + (1 - e3) * 2.6 + turn));
+    secondGimbal.quaternion.copy(spinQuat.setFromAxisAngle(axisD, 2.1 + phase * 0.34 + (1 - e3) * 2.6 + fSecond * TAU * 3));
     facePlane.scale.setScalar(Math.max(0.001, e3));
 
-    system.rotation.x = 0.3 + Math.sin(phase * 0.21) * 0.1 - stage.pointer.sy * 0.35;
-    system.rotation.y = Math.sin(phase * 0.17) * 0.4 + stage.pointer.sx * 0.5;
+    system.rotation.x = 0.3 + Math.sin(phase * 0.21) * 0.1 - stage.pointer.sy * 0.35 + kick.y;
+    system.rotation.y = Math.sin(phase * 0.17) * 0.4 + stage.pointer.sx * 0.5 + kick.x;
     stars.rotation.z = time * 0.01;
   });
 
   function spin() {
     if (stage.reduced) return;
-    utils.remove(flourish);
-    flourish.v = 0;
-    animate(flourish, { v: 1, duration: 2600, ease: 'inOutQuart', onComplete: () => (flourish.v = 0) });
+    // 内側の秒の輪から走り出し、外の時の輪が最後に収まる。途中で押されたら、いまの角度から次の 1 回ぶんへ続ける。
+    flourish.forEach((item, index) => {
+      utils.remove(item);
+      const goal = Math.floor(item.v + 0.5) + 1;
+      animate(item, {
+        v: [
+          { to: item.v - 0.03, duration: 190, ease: 'outQuad' },
+          { to: goal, duration: 1700 + index * 450, ease: 'inOutCubic' },
+        ],
+        delay: index * 140,
+        onComplete: () => (item.v = 0),
+      });
+    });
+    utils.remove(kick);
+    animate(kick, {
+      x: [{ to: stage.pointer.x * 0.5, duration: 200, ease: 'outQuad' }, { to: 0, duration: 2000, ease: 'outElastic(1, .4)' }],
+      y: [{ to: -stage.pointer.y * 0.4, duration: 200, ease: 'outQuad' }, { to: 0, duration: 2000, ease: 'outElastic(1, .4)' }],
+    });
   }
   container.addEventListener('pointerdown', spin);
 
@@ -279,7 +296,7 @@ export function mount(container, options = {}) {
     spin,
     destroy() {
       container.removeEventListener('pointerdown', spin);
-      utils.remove([hand, flourish, ...enter]);
+      utils.remove([hand, kick, ...flourish, ...enter]);
       stage.destroy();
     },
   };

@@ -11,7 +11,7 @@ export const meta = {
   category: 'clock',
   libs: ['three', 'animejs'],
   description:
-    '真鍮の歯車列が層をなして並ぶ、機械式時計の中身です。香箱から 2 番・3 番・4 番車へ歯数の比どおりに力が伝わり、4 番車の上向きの歯が、横倒しの軸のがんぎ車を回します。てんぷが 1 秒に 5 回刻み、秒・分・時の針は実際の時刻を指します。全体はゆっくり向きを変え、ポインターで傾き、クリックするとりゅうずが回ってぜんまいを巻きます。',
+    '真鍮の歯車列が層をなして並ぶ、機械式時計の中身です。香箱から 2 番・3 番・4 番車へ歯数の比どおりに力が伝わり、4 番車の上向きの歯が、横倒しの軸のがんぎ車を回します。てんぷが 1 秒に 5 回刻み、秒・分・時の針は実際の時刻を指します。全体はゆっくり向きを変え、ポインターで傾き、クリックするとぜんまいを巻きます。りゅうずがかちかちと 5 段、巻き戻り止めに押し返されながら回り、部品が香箱の側から順に小さく跳ね、力をもらったてんぷがしばらく大きく振れてから元の振り幅に落ち着きます。',
   params: {
     brass: { type: 'color', label: '真鍮の色', default: '#c8922f' },
     steel: { type: 'color', label: '鋼の色', default: '#cfd5dd' },
@@ -381,7 +381,10 @@ export function mount(container, options = {}) {
   // かみ合いの方向。どれも、回す側から見た相手の向き。
   const dirFourthToThird = PHI.fourth + Math.PI;
   const dirThirdToCenter = PHI.third + Math.PI;
-  const state = { wind: 0 };
+  const state = { wind: 0, power: 0 };
+  // 巻いたときに部品が 1 つずつ跳ねる量。
+  const hops = parts.map(() => ({ v: 0 }));
+  const kick = { x: 0, y: 0 };
   const intros = parts.map(() => ({ v: stage.reduced ? 1 : 0 }));
 
   function secondsOfDay() {
@@ -400,15 +403,16 @@ export function mount(container, options = {}) {
     secondHand.rotation.z = now.second;
     minuteHand.rotation.z = now.minute;
     hourHand.rotation.z = now.hour;
-    balance.rotation.z = now.balance * 1.5;
-    hairspring.rotation.z = now.balance * 0.75;
-    hairspring.scale.setScalar(1 - now.balance * 0.06);
+    const swing = 1 + state.power * 0.75;
+    balance.rotation.z = now.balance * 1.5 * swing;
+    hairspring.rotation.z = now.balance * 0.75 * swing;
+    hairspring.scale.setScalar(1 - now.balance * 0.06 * (1 + state.power * 1.6));
     pallet.rotation.z = now.pallet * 0.1;
     ratchet.rotation.z = state.wind;
     stemSpin.rotation.z = ((state.wind - PHI.barrel) * T.ratchet) / T.winder + Math.PI / T.winder;
     parts.forEach(({ group }, i) => {
       const v = intros[i].v;
-      group.position.z = (1 - v) * 2.2;
+      group.position.z = (1 - v) * 2.2 + hops[i].v * 0.16;
       group.scale.setScalar(Math.max(0.001, v));
     });
   }
@@ -421,8 +425,8 @@ export function mount(container, options = {}) {
   stage.onFrame((time) => {
     if (!stage.reduced) place();
     // 全体も 2 つの軸でゆっくり向きを変える。止めていても立体だと分かる。
-    rig.rotation.x = tilt + Math.sin(time * 0.23 * p.turn) * 0.12 - stage.pointer.sy * 0.3;
-    rig.rotation.y = Math.sin(time * 0.17 * p.turn) * 0.22 + stage.pointer.sx * 0.35;
+    rig.rotation.x = tilt + Math.sin(time * 0.23 * p.turn) * 0.12 - stage.pointer.sy * 0.3 + kick.y;
+    rig.rotation.y = Math.sin(time * 0.17 * p.turn) * 0.22 + stage.pointer.sx * 0.35 + kick.x;
     movement.rotation.z = 0.25 + Math.sin(time * 0.11 * p.turn) * 0.6;
   });
   place();
@@ -431,7 +435,27 @@ export function mount(container, options = {}) {
   function wind() {
     if (stage.reduced) return;
     utils.remove(state);
-    animate(state, { wind: state.wind + TAU / 3, duration: 1400, ease: 'outElastic(1, .6)' });
+    // りゅうずを 5 段、かちかちと巻く。1 段ごとに少し行き過ぎて、巻き戻り止めに当たって戻る。
+    const click = TAU / 12;
+    const clicks = [];
+    for (let i = 1; i <= 5; i += 1) {
+      clicks.push({ to: state.wind + click * i + click * 0.35, duration: 120, ease: 'outQuad' }, { to: state.wind + click * i, duration: 90, ease: 'inQuad' });
+    }
+    animate(state, {
+      wind: clicks,
+      // 巻き終わるころに、てんぷの振りが大きくなり、ゆっくり元へ戻る。
+      power: [{ to: 1, duration: 900, ease: 'inOutQuad', delay: 500 }, { to: 0, duration: 3200, ease: 'inOutSine' }],
+    });
+    utils.remove(hops);
+    animate(hops, {
+      v: [{ to: 1, duration: 150, ease: 'outQuad' }, { to: 0, duration: 800, ease: 'outBounce' }],
+      delay: stagger(60, { start: 950 }),
+    });
+    utils.remove(kick);
+    animate(kick, {
+      x: [{ to: stage.pointer.x * 0.3, duration: 180, ease: 'outQuad' }, { to: 0, duration: 1600, ease: 'outElastic(1, .45)' }],
+      y: [{ to: -stage.pointer.y * 0.22, duration: 180, ease: 'outQuad' }, { to: 0, duration: 1600, ease: 'outElastic(1, .45)' }],
+    });
   }
   container.addEventListener('pointerdown', wind);
 
@@ -439,7 +463,7 @@ export function mount(container, options = {}) {
   if (!stage.reduced) {
     // 登場。部品が上から順に下りてきて、組み上がる。
     animate(intros, { v: 1, duration: 900, ease: 'outBack(1.15)', delay: stagger(90) });
-    if (p.preview) timer = setInterval(wind, 4200);
+    if (p.preview) timer = setInterval(wind, 5400);
   }
 
   return {
@@ -447,7 +471,7 @@ export function mount(container, options = {}) {
     destroy() {
       clearInterval(timer);
       container.removeEventListener('pointerdown', wind);
-      utils.remove([state, ...intros]);
+      utils.remove([state, kick, ...intros, ...hops]);
       stage.destroy();
     },
   };

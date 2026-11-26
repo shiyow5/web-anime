@@ -9,7 +9,7 @@ export const meta = {
   category: 'fantasy',
   libs: ['three'],
   description:
-    '霧のかかった夜の森に、蛍がゆっくり明滅しながら漂います。木の幹は奥行きごとに重ねてあり、ポインターを動かすと手前と奥がずれて見えます。蛍はポインターのほうへ少し集まってきます。',
+    '霧のかかった夜の森に、蛍がゆっくり明滅しながら漂います。木の幹は奥行きごとに重ねてあり、ポインターを動かすと手前と奥がずれて見えます。蛍はポインターのほうへ少し集まってきます。タップすると、近くの蛍が驚いて散り、森全体の光がいったん消えます。続いてタップした位置から光の波が広がり、波が届いた蛍から順にそろって明滅し、やがてそれぞれの明滅に戻ります。',
   params: {
     count: { type: 'range', label: '蛍の数', min: 20, max: 600, step: 10, default: 220 },
     color: { type: 'color', label: '蛍の色', default: '#d8ff7a' },
@@ -69,6 +69,8 @@ uniform float uTime;
 uniform float uSize;
 uniform float uHover;
 uniform vec2 uPointer;
+uniform vec2 uTap;
+uniform vec4 uStir;
 attribute vec4 aSeed;
 varying float vGlow;
 void main(){
@@ -80,6 +82,13 @@ void main(){
   p.xy += (uPointer - p.xy) * 0.18 * uHover * aSeed.z;
   // 明滅。ゆっくり光って、すっと消える。
   float blink = pow(sin(t * (0.6 + aSeed.y * 0.9) + aSeed.z * 40.0) * 0.5 + 0.5, 3.0);
+  // タップの反応。uStir は x: 散る強さ、y: 暗くなる度合い、z: 光の波の半径、w: そろって明滅する度合い。
+  vec2 away = p.xy - uTap;
+  float far = length(away);
+  p.xy += away / (far + 0.001) * uStir.x * 1.3 * exp(-far * 0.7);
+  float reached = smoothstep(uStir.z, uStir.z - 0.6, far);
+  float together = pow(sin(uStir.z * 2.6 - far * 2.6) * 0.5 + 0.5, 3.0);
+  blink = mix(blink * (1.0 - uStir.y), mix(blink, together * 1.25, uStir.w), reached);
   vGlow = 0.12 + blink;
   vec4 mv = modelViewMatrix * vec4(p, 1.0);
   gl_Position = projectionMatrix * mv;
@@ -133,6 +142,8 @@ export function mount(container, options = {}) {
     uSize: { value: 1 },
     uHover: { value: 0 },
     uPointer: { value: new THREE.Vector2() },
+    uTap: { value: new THREE.Vector2() },
+    uStir: { value: new THREE.Vector4(0, 0, 100, 0) },
     uColor: { value: new THREE.Color(p.color) },
   };
   const fireflies = new THREE.Points(
@@ -155,7 +166,42 @@ export function mount(container, options = {}) {
     const target = stage.pointer.inside ? 1 : 0;
     fireflyUniforms.uHover.value += (target - fireflyUniforms.uHover.value) * Math.min(1, dt * 2 + 0.01);
     stage.camera.position.x = stage.pointer.sx * 0.25;
+
+    // タップからの経過時間で、散る（準備）→ 光の波とそろった明滅（山場）→ ほどける（余韻）を進める。
+    if (age >= 0) {
+      age += dt;
+      const ease = (k) => 1 - (1 - Math.min(1, Math.max(0, k))) ** 3;
+      const flee = age < 0.25 ? ease(age / 0.25) : 1 - ease((age - 0.25) / 2.6);
+      const dark = age < 3 ? ease(age / 0.2) : 1 - ease((age - 3) / 1);
+      const radius = Math.max(0, age - 0.3) * 4.2;
+      const together = 1 - ease((age - 2.8) / 1.2);
+      fireflyUniforms.uStir.value.set(flee, dark, radius, together);
+      if (age > 4.2) {
+        age = -1;
+        fireflyUniforms.uStir.value.set(0, 0, 100, 0);
+      }
+    }
   });
 
-  return { destroy: () => stage.destroy() };
+  let age = -1;
+  function startle(event) {
+    if (stage.reduced) return;
+    const view = stage.viewport();
+    const rect = container.getBoundingClientRect();
+    const nx = event?.clientX === undefined ? Math.random() * 1.2 - 0.6 : ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    const ny = event?.clientY === undefined ? Math.random() * 0.8 - 0.4 : -(((event.clientY - rect.top) / rect.height) * 2 - 1);
+    fireflyUniforms.uTap.value.set((nx * view.width) / 2, (ny * view.height) / 2);
+    age = 0;
+  }
+  container.addEventListener('pointerdown', startle);
+  const auto = p.preview && !stage.reduced ? setInterval(() => startle(), 6500) : 0;
+
+  return {
+    startle,
+    destroy() {
+      clearInterval(auto);
+      container.removeEventListener('pointerdown', startle);
+      stage.destroy();
+    },
+  };
 }

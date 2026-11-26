@@ -8,7 +8,7 @@ export const meta = {
   category: 'fancy',
   libs: ['animejs'],
   description:
-    '色とりどりの風船が、ひもを揺らしながら空へ上がっていきます。小さい風船ほど遠くにあって、ゆっくり動きます。クリックすると割れて、紙片が散ります。誕生日や開店のお祝い、キャンペーンの告知に使えます。',
+    '色とりどりの風船が、ひもを揺らしながら空へ上がっていきます。小さい風船ほど遠くにあって、ゆっくり動きます。風船をクリックすると、ふくらんでから割れて紙片が散り、その勢いでまわりの風船が近い順に押しのけられて揺れます。空をクリックすると風の輪が広がり、風船がそこから逃げていきます。誕生日や開店のお祝い、キャンペーンの告知に使えます。',
   params: {
     color1: { type: 'color', label: '色 1', default: '#ff7b9c' },
     color2: { type: 'color', label: '色 2', default: '#ffc857' },
@@ -32,6 +32,7 @@ const CSS = `
 .ua-br__shine{fill:#fff;opacity:.55}
 .ua-br__arc{fill:none;stroke:#fff;stroke-width:2.5;stroke-linecap:round;opacity:.35}
 .ua-br__piece{opacity:0;pointer-events:none}
+.ua-br__gust{fill:none;stroke:#fff;stroke-linecap:round;opacity:0;pointer-events:none}
 .ua-br__ray{stroke-width:3;stroke-linecap:round;opacity:0;pointer-events:none}
 `;
 
@@ -84,6 +85,13 @@ export function mount(container, options = {}) {
     y: ((i * 0.37 + 0.05) % 1) * (H + 80) + 20,
     popped: false,
     respawnAt: 0,
+    ox: 0,
+    oy: 0,
+    vx: 0,
+    vy: 0,
+    kickAt: 0,
+    kx: 0,
+    ky: 0,
   }))
     .sort((a, b) => a.size - b.size)
     .map((data, index) => {
@@ -105,28 +113,70 @@ export function mount(container, options = {}) {
   root.appendChild(svg);
 
   function place(b, t) {
-    b.x = b.lane * W + Math.sin(t * 0.7 + b.phase) * 20 * b.size;
-    const tilt = Math.cos(t * 0.7 + b.phase) * 6;
-    b.el.setAttribute('transform', `translate(${b.x.toFixed(1)} ${b.y.toFixed(1)}) scale(${b.size.toFixed(2)}) rotate(${tilt.toFixed(1)})`);
+    b.x = b.lane * W + Math.sin(t * 0.7 + b.phase) * 20 * b.size + b.ox;
+    // 押しのけられているあいだは、進む向きへ傾く。
+    const tilt = Math.cos(t * 0.7 + b.phase) * 6 + Math.max(-28, Math.min(28, b.vx * 0.09));
+    b.el.setAttribute('transform', `translate(${b.x.toFixed(1)} ${(b.y + b.oy).toFixed(1)}) scale(${b.size.toFixed(2)}) rotate(${tilt.toFixed(1)})`);
     if (!b.popped) b.string.setAttribute('d', stringPath(t, b.phase));
   }
   for (const b of balloons) place(b, 0);
 
   if (reduced) return { destroy: () => removeRoot(root) };
 
+  // (x, y) から外向きの力を、近い風船から順に伝える。届くまでの時間は距離で決まる。
+  function shock(x, y, reach, power, now, skip) {
+    for (const other of balloons) {
+      if (other === skip || other.popped) continue;
+      const dx = other.x - x;
+      const dy = other.y + other.oy - y;
+      const d = Math.hypot(dx, dy) || 1;
+      if (d > reach) continue;
+      const k = (1 - d / reach) ** 1.3 * power;
+      other.kickAt = now + d * 1.5;
+      other.kx = (dx / d) * k;
+      other.ky = (dy / d) * k * 0.7 - k * 0.25;
+    }
+  }
+
+  // 空を押したとき。風の輪が広がり、風船が逃げる。
+  function gust(x, y, now = performance.now()) {
+    if (effects.childElementCount > 8) return;
+    const rings = [0, 1, 2].map((i) => s('circle', { class: 'ua-br__gust', cx: x.toFixed(1), cy: y.toFixed(1), r: 8, 'stroke-width': 5 - i * 1.5, 'stroke-dasharray': i === 1 ? '14 18' : i === 2 ? '3 16' : null }));
+    const group = s('g', {}, rings);
+    effects.appendChild(group);
+    animate(rings, {
+      r: [8, (_, i) => 150 + i * 70],
+      opacity: [
+        { from: 0, to: 0.85, duration: 90 },
+        { to: 0, duration: 760, ease: 'outQuad' },
+      ],
+      duration: 850,
+      delay: stagger(110),
+      ease: 'outCubic',
+      onComplete: () => group.remove(),
+    });
+    shock(x, y, 330, 620, now, null);
+  }
+
   function pop(b, now = performance.now()) {
     if (!b || b.popped) return;
     b.popped = true;
-    b.respawnAt = now + 1300;
+    b.respawnAt = now + 1500;
     const color = palette[b.colorIndex];
+    // 準備: ぐっとふくらむ。山場: 割れて、勢いがまわりへ伝わる。
     animate(b.body, {
       scale: [
-        { to: 1.28, duration: 70, ease: 'outQuad' },
-        { to: 0, duration: 60, ease: 'inQuad' },
+        { to: 1.34, duration: 150, ease: 'outQuad' },
+        { to: 0, duration: 50, ease: 'inQuad' },
       ],
     });
+    shock(b.x, b.y, 300, 520, now + 150, b);
     animate(b.string, { translateY: [0, 150], opacity: [0.75, 0], duration: 800, ease: 'inQuad' });
 
+    disposer.timeout(() => burst(b, color), 150);
+  }
+
+  function burst(b, color) {
     const rays = Array.from({ length: RAYS }, (_, i) => {
       const a = (i / RAYS) * Math.PI * 2;
       return s('line', { class: 'ua-br__ray', stroke: color, x1: (Math.cos(a) * 30).toFixed(1), y1: (Math.sin(a) * 34).toFixed(1), x2: (Math.cos(a) * 62).toFixed(1), y2: (Math.sin(a) * 66).toFixed(1) });
@@ -161,6 +211,11 @@ export function mount(container, options = {}) {
   function respawn(b) {
     utils.remove([b.body, b.string]);
     b.popped = false;
+    b.ox = 0;
+    b.oy = 0;
+    b.vx = 0;
+    b.vy = 0;
+    b.kickAt = 0;
     b.y = H + 70 + Math.random() * 60;
     b.lane = Math.random() * 0.86 + 0.07;
     b.body.style.transform = '';
@@ -182,6 +237,16 @@ export function mount(container, options = {}) {
           if (now > b.respawnAt) respawn(b);
           continue;
         }
+        if (b.kickAt && now >= b.kickAt) {
+          b.vx += b.kx / b.size;
+          b.vy += b.ky / b.size;
+          b.kickAt = 0;
+        }
+        // ずれは、ばねでゆっくり元の列へ戻る。
+        b.vx += (-b.ox * 9 - b.vx * 2.4) * dt;
+        b.vy += (-b.oy * 9 - b.vy * 2.4) * dt;
+        b.ox += b.vx * dt;
+        b.oy += b.vy * dt;
         b.y -= dt * 46 * p.speed * (0.45 + b.size * 0.6);
         if (b.y < -110 * b.size) b.y = H + 70;
         place(b, t);
@@ -194,7 +259,14 @@ export function mount(container, options = {}) {
 
   disposer.listen(svg, 'pointerdown', (event) => {
     const el = event.target.closest?.('.ua-br__balloon');
-    if (el) pop(balloons[Number(el.getAttribute('data-index'))]);
+    if (el) {
+      pop(balloons[Number(el.getAttribute('data-index'))]);
+      return;
+    }
+    const matrix = svg.getScreenCTM?.();
+    if (!matrix) return;
+    const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix.inverse());
+    gust(point.x, point.y);
   });
   const popVisible = () => {
     const candidates = balloons.filter((b) => !b.popped && b.y > 120 && b.y < 440);

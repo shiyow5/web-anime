@@ -10,7 +10,7 @@ export const meta = {
   category: 'fancy',
   libs: ['three', 'animejs'],
   description:
-    '虹色に光るしゃぼん玉が、ゆらゆら揺れながら上がっていきます。膜の色はシェーダーで作っていて、時間とともに流れます。クリックすると弾けて、しぶきが飛びます。春の特集や子ども用品の紹介、やさしい印象の背景に使えます。',
+    '虹色に光るしゃぼん玉が、ゆらゆら揺れながら上がっていきます。膜の色はシェーダーで作っていて、時間とともに流れます。しゃぼん玉をクリックすると弾けてしぶきが飛び、まわりの玉は風に押されて揺れ、すぐ近くの小さな玉は少し遅れてつられて弾けます。何も無い場所をクリックすると、そこから新しい玉がいくつか、ふくらみながら吹き出します。春の特集や子ども用品の紹介、やさしい印象の背景に使えます。',
   params: {
     count: { type: 'range', label: '玉の数', min: 6, max: 40, step: 1, default: 20 },
     size: { type: 'range', label: '玉の大きさ', min: 0.5, max: 1.8, step: 0.05, default: 1 },
@@ -158,6 +158,7 @@ export function mount(container, options = {}) {
       rise: 0.035 + Math.random() * 0.04,
       phase: Math.random() * 20,
       grow: { v: stage.reduced ? 1 : 0 },
+      nudge: { x: 0, y: 0 },
       popping: false,
     };
   });
@@ -190,7 +191,7 @@ export function mount(container, options = {}) {
     const span = view.height + r * 2.4;
     const y = (bubble.v - 0.5) * span;
     const sway = Math.sin(time * 0.6 + bubble.phase) * 0.22 + Math.sin(time * 1.3 + bubble.phase * 2.0) * 0.07;
-    bubble.mesh.position.set(bubble.u * view.width + sway * view.unit, y, bubble.z);
+    bubble.mesh.position.set(bubble.u * view.width + sway * view.unit + bubble.nudge.x, y + bubble.nudge.y, bubble.z);
     const wobble = Math.sin(time * 2.1 + bubble.phase) * 0.04;
     const s = r * bubble.grow.v * (1 + bubble.uniforms.uPop.value * 0.35);
     bubble.mesh.scale.set(s * (1 + wobble), s * (1 - wobble), 1);
@@ -204,6 +205,9 @@ export function mount(container, options = {}) {
     bubble.uniforms.uSeed.value = Math.random();
     bubble.popping = false;
     bubble.grow.v = 1;
+    utils.remove(bubble.nudge);
+    bubble.nudge.x = 0;
+    bubble.nudge.y = 0;
   }
 
   function pop(bubble) {
@@ -222,6 +226,64 @@ export function mount(container, options = {}) {
     }
     dropsAlive = true;
     animate(bubble.uniforms.uPop, { value: [0, 1], duration: 320, ease: 'outQuad', onComplete: () => respawn(bubble) });
+    // 余韻: 弾けた風でまわりの玉が外へ押され、ばねで戻る。すぐ近くの小さな玉は、少し遅れてつられて弾ける。
+    let chained = 0;
+    for (const other of bubbles) {
+      if (other === bubble || other.popping) continue;
+      const dx = other.mesh.position.x - x;
+      const dy = other.mesh.position.y - y;
+      const distance = Math.hypot(dx, dy) || 1;
+      const reach = view.unit * 2.4;
+      if (distance > reach) continue;
+      const push = (1 - distance / reach) * view.unit * 0.5;
+      animate(other.nudge, {
+        x: [{ to: (dx / distance) * push, duration: 180, ease: 'outQuad' }, { to: 0, duration: 1300, ease: 'outElastic(1, .4)' }],
+        y: [{ to: (dy / distance) * push, duration: 180, ease: 'outQuad' }, { to: 0, duration: 1300, ease: 'outElastic(1, .4)' }],
+        delay: (distance / reach) * 220,
+      });
+      if (chained < 2 && distance < view.unit * 1.1 && other.mesh.scale.x < r) {
+        chained += 1;
+        const timer = setTimeout(() => {
+          chainTimers.delete(timer);
+          pop(other);
+        }, 220 + chained * 160);
+        chainTimers.add(timer);
+      }
+    }
+  }
+  const chainTimers = new Set();
+
+  // 何も無い場所を押すと、そこから新しい玉が吹き出す。画面の端に近い玉を借りてきて、小さな状態からふくらませる。
+  function blow(clientX, clientY) {
+    if (stage.reduced) return;
+    const rect = container.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const wx = ((clientX - rect.left) / rect.width - 0.5) * view.width;
+    const wy = (0.5 - (clientY - rect.top) / rect.height) * view.height;
+    const spare = bubbles
+      .filter((bubble) => !bubble.popping)
+      .sort((a, b) => Math.abs(b.v - 0.5) - Math.abs(a.v - 0.5))
+      .slice(0, 4);
+    spare.forEach((bubble, i) => {
+      const r = bubble.radius * p.size * view.unit;
+      const span = view.height + r * 2.4;
+      bubble.u = wx / view.width;
+      bubble.v = wy / span + 0.5;
+      bubble.uniforms.uSeed.value = Math.random();
+      utils.remove(bubble.grow);
+      utils.remove(bubble.nudge);
+      bubble.grow.v = 0;
+      const angle = -Math.PI / 2 + (i - 1.5) * 0.7;
+      animate(bubble.grow, { v: [0, 1], delay: i * 110, ease: spring({ stiffness: 140, damping: 8 }) });
+      // 吹き口から扇の形に押し出され、そのまま漂い始める。
+      animate(bubble.nudge, {
+        x: [0, Math.cos(angle) * view.unit * (0.5 + i * 0.12)],
+        y: [0, -Math.sin(angle) * view.unit * 0.45],
+        duration: 900,
+        delay: i * 110,
+        ease: 'outCubic',
+      });
+    });
   }
 
   // クリックした位置にいちばん近い玉を探す。画面上の距離で比べる。
@@ -246,7 +308,11 @@ export function mount(container, options = {}) {
     }
     return best;
   }
-  const onClick = (event) => pop(pick(event.clientX, event.clientY));
+  const onClick = (event) => {
+    const hit = pick(event.clientX, event.clientY);
+    if (hit) pop(hit);
+    else blow(event.clientX, event.clientY);
+  };
   container.addEventListener('click', onClick);
   container.style.cursor = 'pointer';
 
@@ -308,6 +374,8 @@ export function mount(container, options = {}) {
     pop: () => pop(bubbles.find((bubble) => !bubble.popping && bubble.v > 0.25 && bubble.v < 0.8)),
     destroy() {
       clearInterval(autoPop);
+      for (const timer of chainTimers) clearTimeout(timer);
+      utils.remove(bubbles.map((bubble) => bubble.nudge));
       container.removeEventListener('click', onClick);
       container.style.cursor = '';
       utils.remove([...grows, ...bubbles.map((bubble) => bubble.uniforms.uPop)]);

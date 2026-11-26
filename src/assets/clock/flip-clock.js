@@ -8,7 +8,7 @@ export const meta = {
   category: 'clock',
   libs: ['animejs'],
   description:
-    '駅や空港の案内板のように、数字の板がぱたんとめくれて時刻が変わります。上半分が手前に倒れ、下半分が弾んで収まります。時・分・秒を 24 時間制か 12 時間制で表示できます。',
+    '駅や空港の案内板のように、数字の板がぱたんとめくれて時刻が変わります。上半分が手前に倒れ、下半分が弾んで収まります。タップすると、触った板から順に全部の札がばらばらと数字を送り、遠い札ほど長く回ってから今の時刻でぱたんと止まります。時・分・秒を 24 時間制か 12 時間制で表示できます。',
   params: {
     format: {
       type: 'select',
@@ -61,7 +61,7 @@ function buildCard() {
   const flapTop = face('ua-fc__half--top ua-fc__flap');
   const flapBottom = face('ua-fc__half--bottom ua-fc__flap');
   const el = h('div', { class: 'ua-fc__card' }, top.el, bottom.el, flapTop.el, flapBottom.el);
-  return { el, top, bottom, flapTop, flapBottom, value: null, timeline: null };
+  return { el, top, bottom, flapTop, flapBottom, value: null, timeline: null, wait: 0, left: 0 };
 }
 
 export function mount(container, options = {}) {
@@ -94,7 +94,7 @@ export function mount(container, options = {}) {
     card.bottom.span.textContent = next;
   }
   // めくる。古い数字の上半分を手前へ倒し、続けて新しい数字の下半分を下ろす。
-  function flip(card, next) {
+  function flip(card, next, fast = false) {
     const previous = card.value;
     if (previous === next) return;
     if (previous === null || reduced) {
@@ -114,16 +114,55 @@ export function mount(container, options = {}) {
         utils.set([card.flapTop.el, card.flapBottom.el], { opacity: 0 });
       },
     })
-      .add(card.flapTop.el, { rotateX: -90, duration: 240, ease: 'inQuad' })
-      .add(card.flapBottom.el, { rotateX: 0, duration: 460, ease: 'outBounce' });
+      .add(card.flapTop.el, { rotateX: -90, duration: fast ? 45 : 240, ease: 'inQuad' })
+      .add(card.flapBottom.el, { rotateX: 0, duration: fast ? 40 : 460, ease: fast ? 'outQuad' : 'outBounce' });
   }
 
   function tick() {
     const text = timeParts(new Date(), p.format === '12').slice(0, groups).join('');
     root.setAttribute('aria-label', `${text.slice(0, 2)}時${text.slice(2, 4)}分`);
-    cards.forEach((card, index) => flip(card, text[index]));
+    cards.forEach((card, index) => {
+      if (card.left > 0 || card.wait > 0) return;
+      flip(card, text[index]);
+    });
   }
   tick();
+
+  // タップ。案内板の表示替えのように、触った札から順に数字を送る。遠い札ほど長く回り、最後に今の時刻で止まる。
+  function shuffle(event) {
+    if (reduced) return;
+    let origin = 0;
+    if (event) {
+      const distances = cards.map((card) => {
+        const rect = card.el.getBoundingClientRect();
+        return Math.abs(event.clientX - (rect.left + rect.width / 2));
+      });
+      origin = distances.indexOf(Math.min(...distances));
+    }
+    cards.forEach((card, index) => {
+      const far = Math.abs(index - origin);
+      card.wait = far;
+      card.left = 7 + far * 3;
+    });
+    const els = cards.map((card) => card.el);
+    utils.remove(els);
+    animate(els, {
+      translateY: [{ to: '.05em', duration: 110, ease: 'outQuad' }, { to: 0, duration: 520, ease: 'outElastic(1, .45)' }],
+      delay: (_, index) => Math.abs(index - origin) * 55,
+    });
+  }
+  disposer.interval(() => {
+    for (const card of cards) {
+      if (card.wait > 0) card.wait -= 1;
+      else if (card.left > 0) {
+        card.left -= 1;
+        if (card.left > 0) flip(card, String((Number(card.value) + 1 + Math.floor(Math.random() * 3)) % 10), true);
+      }
+    }
+  }, 95);
+  disposer.listen(root, 'pointerdown', shuffle);
+  if (options.preview) disposer.interval(() => shuffle(), 5200);
+
   disposer.interval(tick, 200);
   disposer.add(() => cards.forEach((card) => card.timeline?.pause()));
   if (!reduced) animate(colons, { opacity: [1, 0.25], duration: 500, ease: 'inOutSine', alternate: true, loop: true });

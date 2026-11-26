@@ -8,7 +8,7 @@ export const meta = {
   category: 'fancy',
   libs: ['animejs'],
   description:
-    '星、花、雲、リボンなどの白いふちのシールが、手帳の紙の上にぺたっと 1 枚ずつ貼られます。ポインターを乗せるとシールが浮き、クリックすると貼り直します。紙の何もないところを押すと、全部を貼り直します。手帳や日記のアプリ、雑貨の紹介、ごほうびの演出に使えます。',
+    '星、花、雲、リボンなどの白いふちのシールが、手帳の紙の上にぺたっと 1 枚ずつ貼られます。ポインターを乗せるとシールが浮き、クリックすると、端からぺりっとめくれて浮き上がり、もう一度ぺたっと貼り付きます。紙の何もないところを押すと、押した場所に近いシールから順にめくれて、波のように貼り直されます。手帳や日記のアプリ、雑貨の紹介、ごほうびの演出に使えます。',
   params: {
     background: { type: 'color', label: '紙の色', default: '#fff8ea' },
     border: { type: 'color', label: 'ふちの色', default: '#ffffff' },
@@ -142,9 +142,32 @@ export function mount(container, options = {}) {
   });
 
   // 上から少し傾いて降りてきて、押しつけられて少しつぶれ、ばねで戻る。
-  function stick(item, delay = 0) {
+  function stick(item, delay = 0, peel = false) {
     if (reduced) return;
     const side = item.angle >= 0 ? 1 : -1;
+    if (peel) {
+      // 準備: 端からめくれて浮く。山場: 押しつけられてつぶれる。余韻: ばねで戻る。
+      const UP = 260;
+      animate(item.lift, {
+        opacity: 1,
+        y: [{ to: -30, duration: UP, ease: 'outQuad' }, { to: 0, duration: 230, ease: 'inQuad' }],
+        rotate: [{ to: 14 * side, duration: UP, ease: 'outBack(2)' }, { to: 0, duration: 230, ease: 'inQuad' }],
+        skewX: [{ to: -12 * side, duration: UP * 0.6, ease: 'outQuad' }, { to: 0, duration: UP * 0.4 + 230, ease: 'inOutQuad' }],
+        scale: [
+          { to: 1.4, duration: UP, ease: 'outQuad' },
+          { to: 0.88, duration: 230, ease: 'inQuad' },
+          { to: 1, ease: spring({ stiffness: 320, damping: 9 }) },
+        ],
+        delay,
+      });
+      animate(item.shade, {
+        translateX: [{ to: 12, duration: UP, ease: 'outQuad' }, { to: 2, duration: 230, ease: 'inQuad' }],
+        translateY: [{ to: 22, duration: UP, ease: 'outQuad' }, { to: 4, duration: 230, ease: 'inQuad' }],
+        opacity: [{ to: 0.07, duration: UP }, { to: 0.16, duration: 230 }],
+        delay,
+      });
+      return;
+    }
     animate(item.lift, {
       opacity: { from: 0, to: 1, duration: 120, ease: 'outQuad' },
       y: { from: -34, to: 0, duration: 230, ease: 'inQuad' },
@@ -172,11 +195,22 @@ export function mount(container, options = {}) {
     animate(item.shade, { translateX: on ? 7 : 2, translateY: on ? 14 : 4, opacity: on ? 0.09 : 0.16, duration: 260, ease: 'outQuad' });
   }
 
-  function stickAll() {
-    stickers.forEach((item, i) => {
+  let stuck = false;
+  function stickAll(event) {
+    // 押した場所があれば、そこに近いシールから順に貼り直す。
+    const at = event && Number.isFinite(event.clientX) ? event : null;
+    const order = stickers
+      .map((item, i) => {
+        if (!at) return { item, rank: i };
+        const rect = item.slot.getBoundingClientRect();
+        return { item, rank: Math.hypot(rect.left + rect.width / 2 - at.clientX, rect.top + rect.height / 2 - at.clientY) };
+      })
+      .sort((a, b) => a.rank - b.rank);
+    order.forEach(({ item }, i) => {
       item.lifted = false;
-      stick(item, i * p.interval);
+      stick(item, i * p.interval, stuck);
     });
+    stuck = true;
   }
 
   for (const item of stickers) {
@@ -185,13 +219,13 @@ export function mount(container, options = {}) {
     disposer.listen(item.slot, 'click', (event) => {
       event.stopPropagation();
       item.lifted = false;
-      stick(item);
+      stick(item, 0, true);
     });
   }
   disposer.listen(root, 'click', stickAll);
 
   if (!reduced) {
-    disposer.timeout(stickAll, 250);
+    disposer.timeout(() => stickAll(), 250);
     if (p.preview) {
       // 一覧では、1 枚ずつ浮かせて見せたあと、全部を貼り直す。
       let turn = 0;

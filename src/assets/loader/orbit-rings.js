@@ -1,4 +1,4 @@
-import { animate, stagger, utils } from 'animejs';
+import { animate, createTimer, stagger, utils } from 'animejs';
 import { createDisposer, createRoot, h, injectStyle, localPointer, prefersReducedMotion, removeRoot } from '../../lib/dom.js';
 import { resolveParams } from '../../lib/params.js';
 
@@ -8,7 +8,7 @@ export const meta = {
   category: 'loader',
   libs: ['animejs'],
   description:
-    '目盛りの付いた輪が入れ子になり、外の輪に支えられた内の輪が、それぞれ別の軸で回り続けます。輪の上を光の粒が尾を引いて走り、小さな輪が立ったまま自分の軸で回ります。CSS の 3D 変形だけで作ってあり、ポインターで全体が傾き、クリックすると一瞬だけ速く回ります。読み込み中や処理中の表示に使えます。',
+    '目盛りの付いた輪が入れ子になり、外の輪に支えられた内の輪が、それぞれ別の軸で回り続けます。輪の上を光の粒が尾を引いて走り、小さな輪が立ったまま自分の軸で回ります。CSS の 3D 変形だけで作ってあり、ポインターで全体が傾きます。クリックすると、ばらばらに回っていた輪が外から順に 1 枚の面へそろって正面を向き、中心から光の輪が広がって完了の表示に変わり、内側の輪からほどけてまた回り始めます。読み込み中や処理中の表示に使えます。',
   params: {
     colorA: { type: 'color', label: '外側の輪の色', default: '#7cf3ff' },
     colorB: { type: 'color', label: '内側の輪の色', default: '#ff7ad9' },
@@ -58,6 +58,8 @@ const CSS = `
   box-shadow:0 0 1.6cqmin var(--c)}
 .ua-or__core{grid-area:1/1;width:calc(var(--ua-size)*7cqmin);aspect-ratio:1;margin-bottom:5cqmin;border-radius:50%;
   background:radial-gradient(circle,#fff 0 18%,var(--ua-b) 46%,transparent 70%);box-shadow:0 0 6cqmin var(--ua-b)}
+.ua-or__wave{grid-area:1/1;width:calc(var(--ua-size)*7cqmin);aspect-ratio:1;margin-bottom:5cqmin;border-radius:50%;opacity:0;pointer-events:none;
+  border:max(1px,.14cqmin) solid #fff;box-shadow:0 0 1.2cqmin var(--ua-b),inset 0 0 1.2cqmin var(--ua-a)}
 .ua-or__label{position:absolute;left:0;right:0;bottom:5cqh;margin:0;text-align:center;color:var(--ua-a);
   font:600 max(9px,2.7cqmin)/1 ui-monospace,"SF Mono",Menlo,Consolas,monospace;letter-spacing:.5em;text-indent:.5em;
   text-shadow:0 0 1.5cqmin color-mix(in srgb,var(--ua-a) 70%,transparent)}
@@ -100,7 +102,8 @@ export function mount(container, options = {}) {
   const tilt = h('div', { class: 'ua-or__tilt' }, scene);
   const core = h('div', { class: 'ua-or__core' });
   const label = h('p', { class: 'ua-or__label', text: p.label });
-  root.append(h('div', { class: 'ua-or__view' }, core, tilt), label);
+  const waves = Array.from({ length: 3 }, () => h('i', { class: 'ua-or__wave' }));
+  root.append(h('div', { class: 'ua-or__view' }, core, waves, tilt), label);
 
   if (reduced) {
     // 動きを止めた完成形。輪がそれぞれ別の向きに開いた状態で見せる。
@@ -120,15 +123,16 @@ export function mount(container, options = {}) {
   }
 
   const second = 1000 / p.speed;
-  const loops = [];
   // 全体も 2 つの軸でゆっくり向きを変える。
-  animate(scene, { rotateY: [0, 360], duration: 30 * second, ease: 'linear', loop: true });
-  animate(scene, { rotateX: [-30, 30], duration: 8 * second, ease: 'inOutSine', alternate: true, loop: true });
+  const sceneY = animate(scene, { rotateY: [0, 360], duration: 30 * second, ease: 'linear', loop: true });
+  const sceneX = animate(scene, { rotateX: [-30, 30], duration: 8 * second, ease: 'inOutSine', alternate: true, loop: true });
+  const spins = [];
+  const fast = [];
   parts.forEach((part, i) => {
     const { ring } = part;
-    loops.push(animate(part.spin, { [ring.prop]: [ring.start, ring.start + 360 * ring.dir], duration: ring.period * second, ease: 'linear', loop: true }));
-    loops.push(animate(part.orbit, { rotateZ: [i * 67, i * 67 - 360 * ring.dir], duration: (2.6 - i * 0.22) * second, ease: 'linear', loop: true }));
-    if (part.coin) loops.push(animate(part.coin, { rotateY: [0, 360], duration: 1.7 * second, ease: 'linear', loop: true }));
+    spins.push(animate(part.spin, { [ring.prop]: [ring.start, ring.start + 360 * ring.dir], duration: ring.period * second, ease: 'linear', loop: true }));
+    fast.push(animate(part.orbit, { rotateZ: [i * 67, i * 67 - 360 * ring.dir], duration: (2.6 - i * 0.22) * second, ease: 'linear', loop: true }));
+    if (part.coin) fast.push(animate(part.coin, { rotateY: [0, 360], duration: 1.7 * second, ease: 'linear', loop: true }));
   });
   // 登場。外の輪から順に、別の向きから回り込んで軸の位置に収まる。
   animate(
@@ -146,32 +150,108 @@ export function mount(container, options = {}) {
     tilt.style.transform = '';
   });
 
-  // 一瞬だけ速く回し、全体をふくらませて戻す。
+  // 輪をそろえる仕掛け。回り続けるアニメーションを止め、その時刻を「面がそろう時刻」まで早送りする。
+  // 角度を直接書き換えないので、ほどくときは止めた所から続きを再生するだけでつながる。
   const boost = { v: 1 };
-  function pulse() {
-    utils.remove(boost);
-    animate(boost, {
-      v: [4, 1],
-      duration: 1600,
-      ease: 'outQuad',
-      onUpdate() {
-        for (const loop of loops) loop.speed = boost.v;
+  const seekers = [...spins, sceneY, sceneX].map((loop) => ({ loop, t: 0 }));
+  const timers = new Set();
+  let phase = 'idle';
+  const later = (ms, fn) => {
+    const timer = createTimer({
+      duration: Math.max(1, ms),
+      onComplete: () => {
+        timers.delete(timer);
+        fn();
       },
     });
+    timers.add(timer);
+  };
+  // 回転が 180 度の倍数（親の輪と同じ面）になる、次の時刻を返す。
+  const flatTime = (loop, start, dir) => {
+    const span = loop.iterationDuration;
+    const angle = start + (360 * dir * loop.currentTime) / span;
+    const target = dir > 0 ? Math.ceil((angle + 1) / 180) * 180 : Math.floor((angle - 1) / 180) * 180;
+    return ((target - start) * dir * span) / 360;
+  };
+  const lock = (seeker, time, duration, delay) => {
+    seeker.loop.pause();
+    seeker.t = seeker.loop.currentTime;
+    animate(seeker, { t: time, duration, delay, ease: 'outBack(1.4)', onUpdate: () => seeker.loop.seek(seeker.t) });
+  };
+  function flare() {
+    utils.remove(waves);
+    animate(waves, { scale: [0.4, 10], opacity: [{ to: 0.95, duration: 80 }, { to: 0, duration: 820, ease: 'outQuad' }], duration: 900, delay: stagger(150), ease: 'outExpo' });
+    animate(label, { letterSpacing: ['1.1em', '.5em'], duration: 700, ease: 'outExpo' });
+  }
+  function release() {
+    phase = 'releasing';
+    label.textContent = p.label;
+    // 内側の輪から順にほどける。ほどけた輪は、勢いを付けて回り始める。
+    parts.forEach((_, i) => later((count - 1 - i) * 120, () => spins[i].play()));
+    later(count * 120, () => {
+      sceneY.play();
+      sceneX.play();
+      animate(boost, {
+        v: [3.2, 1],
+        duration: 1500,
+        ease: 'outQuad',
+        onUpdate() {
+          for (const loop of [...spins, ...fast]) loop.speed = boost.v;
+        },
+        onComplete() {
+          phase = 'idle';
+        },
+      });
+    });
+  }
+  function pulse() {
+    if (phase === 'locking' || phase === 'releasing') return;
+    if (phase === 'held') {
+      // そろっている間にもう一度押されたら、光の輪だけをもう一度出す。
+      flare();
+      return;
+    }
+    phase = 'locking';
+    utils.remove(boost);
+    for (const loop of [...spins, ...fast]) loop.speed = 1;
+    // 準備: 全体が少し縮んで、正面を向く。
     animate(scene, {
       scale: [
-        { to: 1.14, duration: 150, ease: 'outQuad' },
-        { to: 1, duration: 1000, ease: 'outElastic(1, .4)' },
+        { to: 0.88, duration: 260, ease: 'outQuad' },
+        { to: 1.06, duration: 620, ease: 'inOutQuad' },
+        { to: 1, duration: 700, ease: 'outElastic(1, .5)' },
       ],
+    });
+    const yLoop = seekers[count];
+    const xLoop = seekers[count + 1];
+    lock(yLoop, flatTime(sceneY, 0, 1), 900, 0);
+    const span = sceneX.iterationDuration;
+    let level = Math.floor(sceneX.currentTime / span) * span + span / 2;
+    if (level < sceneX.currentTime) level += span;
+    lock(xLoop, level, 900, 0);
+    // 山場: 外の輪から順に、親の輪と同じ面へはまる。
+    parts.forEach((part, i) => lock(seekers[i], flatTime(spins[i], part.ring.start, part.ring.dir), 560, 160 + i * 110));
+    later(160 + (count - 1) * 110 + 520, () => {
+      phase = 'held';
+      label.textContent = 'COMPLETE';
+      for (const loop of fast) loop.speed = 3.5;
+      flare();
+      // 余韻: しばらくそろったまま光の粒だけが走り、そのあとほどける。
+      later(1500, release);
     });
   }
   disposer.listen(root, 'pointerdown', pulse);
+  if (p.preview) disposer.interval(pulse, 6500);
+  disposer.add(() => {
+    for (const timer of timers) timer.pause();
+    timers.clear();
+    utils.remove([boost, ...seekers]);
+  });
 
   return {
     pulse,
     destroy() {
       disposer.run();
-      utils.remove(boost);
       removeRoot(root);
     },
   };

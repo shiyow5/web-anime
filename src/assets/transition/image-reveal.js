@@ -15,7 +15,7 @@ export const meta = {
   category: 'transition',
   libs: ['animejs'],
   description:
-    '次の絵が、ブラインド、六角形の絞り、斜めの帯、タイルの形で、時間差を付けて現れます。絵を押すと、絞りは押した位置から開きます。写真の切り替えや、作品紹介の画面に使います。戻り値の go() で好きなときに切り替えられます。',
+    '次の絵が、ブラインド、六角形の絞り、斜めの帯、タイルの形で、時間差を付けて現れます。絵を押すと、押した位置に輪が広がって前の絵が少し沈み、次の絵がその位置から現れます。絞りは押した点から開き、ブラインドと斜めの帯は押した段から、タイルは押した 1 枚から外へ順に広がります。写真の切り替えや、作品紹介の画面に使います。戻り値の go() で好きなときに切り替えられます。',
   params: {
     variant: { type: 'select', label: '現れ方', options: [{ value: 'cycle', label: '4 種類を順番に' }, ...VARIANTS], default: 'cycle' },
     pieces: { type: 'range', label: '帯やタイルの数', min: 3, max: 12, step: 1, default: 7 },
@@ -32,6 +32,8 @@ const CSS = `
   box-shadow:0 0 0 1px #ffffff1f}
 .ua-ir__pic{position:absolute;inset:0;overflow:hidden;background:var(--bg)}
 .ua-ir__pic i{position:absolute;display:block}
+.ua-ir__ping{position:absolute;z-index:3;width:min(9cqw,13cqh);aspect-ratio:1;margin:calc(min(9cqw,13cqh)/-2) 0 0 calc(min(9cqw,13cqh)/-2);
+  border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px #0003,inset 0 0 0 1px #0003;pointer-events:none;opacity:0}
 .ua-ir__bar{position:absolute;left:5cqw;right:5cqw;bottom:0;height:19cqh;display:flex;align-items:center;gap:1.2em;
   font-size:clamp(9px,min(2cqw,4.2cqh),17px)}
 .ua-ir__no{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:.85em;letter-spacing:.1em;opacity:.6}
@@ -104,7 +106,7 @@ const rect = (x, y, w, hh) => (w <= 0 || hh <= 0 ? '' : `M${x.toFixed(1)} ${y.to
 const SHAPES = {
   blinds: {
     count: (n) => n,
-    delay: () => stagger(70),
+    delay: (n, o) => stagger(70, { from: Math.min(n - 1, Math.floor(o.y * n)) }),
     draw(e, w, hh) {
       const strip = hh / e.length;
       return e.map((v, i) => rect(0, i * strip, w, strip * v + (v > 0.999 ? 1 : 0))).join('');
@@ -112,7 +114,7 @@ const SHAPES = {
   },
   diagonal: {
     count: (n) => n,
-    delay: () => stagger(80),
+    delay: (n, o) => stagger(80, { from: Math.min(n - 1, Math.floor(o.x * n)) }),
     draw(e, w, hh) {
       const slant = hh * 0.6;
       const band = (w + slant) / e.length;
@@ -132,8 +134,10 @@ const SHAPES = {
       const [cols, rows] = this.grid(n);
       return cols * rows;
     },
-    delay(n) {
-      return stagger(55, { grid: this.grid(n), from: 'center' });
+    delay(n, o) {
+      const [cols, rows] = this.grid(n);
+      const from = Math.min(rows - 1, Math.floor(o.y * rows)) * cols + Math.min(cols - 1, Math.floor(o.x * cols));
+      return stagger(55, { grid: [cols, rows], from });
     },
     draw(e, w, hh, n) {
       const [cols, rows] = this.grid(n);
@@ -184,7 +188,8 @@ export function mount(container, options = {}) {
 
   let index = 0;
   let current = buildPicture(0);
-  const frame = h('div', { class: 'ua-ir__frame' }, current);
+  const pings = [h('i', { class: 'ua-ir__ping' }), h('i', { class: 'ua-ir__ping' })];
+  const frame = h('div', { class: 'ua-ir__frame' }, current, pings);
   const no = h('span', { class: 'ua-ir__no' });
   const name = h('b');
   const kind = h('span');
@@ -213,7 +218,7 @@ export function mount(container, options = {}) {
     const next = buildPicture(index);
     const previous = current;
     current = next;
-    frame.appendChild(next);
+    frame.insertBefore(next, pings[0]);
     const finish = () => {
       next.style.clipPath = '';
       previous.remove();
@@ -232,10 +237,20 @@ export function mount(container, options = {}) {
       next.style.clipPath = `path('${d || 'M0 0Z'}')`;
     };
     draw();
+    // 準備: 押した位置に輪が 2 本広がり、前の絵が少し沈む。
+    const lead = t(140);
+    for (const ping of pings) {
+      ping.style.left = `${origin.x * 100}%`;
+      ping.style.top = `${origin.y * 100}%`;
+    }
+    utils.remove(pings);
+    animate(pings, { scale: [0.2, (_, i) => 2.4 + i * 1.6], opacity: [{ to: 0.9, duration: t(90) }, { to: 0, duration: t(560), ease: 'outQuad' }], duration: t(650), delay: stagger(t(110)), ease: 'outExpo' });
+    // 山場: 押した位置から、切り抜きの形が時間差で広がる。
+    const spread = shape.delay(pieces, origin);
     animate(states, {
       v: 1,
       duration: t(chosen === 'iris' ? 1100 : 760),
-      delay: shape.delay(pieces),
+      delay: typeof spread === 'function' ? (...args) => lead + spread(...args) / p.speed : lead,
       ease: chosen === 'iris' ? 'inOutQuart' : 'inOutCubic',
       onUpdate: draw,
       onComplete: () => {
@@ -244,7 +259,8 @@ export function mount(container, options = {}) {
     });
     // 中の絵は少し大きい状態から収まり、前の絵は奥へ引く。
     animate(next.children, { scale: [1.25, 1], duration: t(1500), ease: 'outExpo', delay: stagger(t(40)) });
-    animate(previous, { scale: 1.08, duration: t(1300), ease: 'outQuad' });
+    previous.style.transformOrigin = `${origin.x * 100}% ${origin.y * 100}%`;
+    animate(previous, { scale: [{ to: 0.965, duration: lead, ease: 'outQuad' }, { to: 1.08, duration: t(1200), ease: 'outQuad' }] });
     animate(caption, {
       y: [{ to: '-60%', duration: t(220), ease: 'inQuad' }, { to: '60%', duration: 0 }, { to: '0%', duration: t(520), ease: 'outExpo' }],
       opacity: [{ to: 0, duration: t(220) }, { to: 1, duration: t(400) }],

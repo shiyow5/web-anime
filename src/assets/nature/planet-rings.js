@@ -11,7 +11,7 @@ export const meta = {
   category: 'nature',
   libs: ['three', 'animejs'],
   description:
-    '自転軸の傾いた惑星が、細かい縞の環をまとって静かに回ります。月は環とは別の傾きの軌道を回り、全体はゆっくり歳差で向きを変えます。環には惑星の影が落ち、惑星には環の影が落ちます。クリックすると、しばらく時間が早送りになります。宇宙や天文の話題の背景に使えます。',
+    '自転軸の傾いた惑星が、細かい縞の環をまとって静かに回ります。月は環とは別の傾きの軌道を回り、全体はゆっくり歳差で向きを変えます。環には惑星の影が落ち、惑星には環の影が落ちます。クリックすると、押した方向から小さな天体が流れ込んで環に当たります。当たった場所が光って環に穴があき、波紋が環を伝わりながら、内側ほど速い公転に引かれて渦の形に伸びていきます。破片は環に沿って散り、しばらく時間が早送りになります。宇宙や天文の話題の背景に使えます。',
   params: {
     color: { type: 'color', label: '惑星の明るい帯の色', default: '#e2c79a' },
     band: { type: 'color', label: '惑星の暗い帯の色', default: '#9a6a48' },
@@ -122,18 +122,29 @@ uniform vec3 uSun;
 uniform vec3 uColor;
 uniform float uReveal;
 uniform float uFade;
+uniform vec4 uHit;
 varying vec3 vPos;
 ${ringDensity}
 void main(){
   float r = length(vPos.xz);
   float t = (r - uRingIn) / (uRingOut - uRingIn);
   float d = ringDensity(r, fwidth(t)) * smoothstep(uReveal, uReveal - 0.08, t);
+  // 衝突の波紋。当たった点からの距離を、内側ほど速く回る分だけずらして測る。輪は時間とともに渦の形に伸びる。
+  float da = atan(vPos.z, vPos.x) - uHit.y - uHit.z * 0.45 * (pow(uHit.x / max(r, 0.01), 1.5) - 1.0);
+  da = atan(sin(da), cos(da));
+  float hd = length(vec2(r - uHit.x, r * da));
+  float front = uHit.z * 0.5;
+  float rip = sin((hd - front) * 30.0) * exp(-abs(hd - front) * 3.2) * exp(-uHit.z * 0.4) * uHit.w;
+  float hole = smoothstep(0.16, 0.03, hd) * exp(-uHit.z * 0.35) * uHit.w;
+  d = clamp(d * (1.0 + rip * 0.9) * (1.0 - hole * 0.95), 0.0, 1.0);
   // 惑星の影。環の点から太陽へ向かう線が、半径 1 の球に当たるかを調べる。
   float along = dot(vPos, uSun);
   float away = length(vPos - uSun * along);
   float shadow = along < 0.0 ? smoothstep(1.03, 0.95, away) : 0.0;
   vec3 col = uColor * (0.62 + 0.38 * d) * mix(vec3(1.0, 0.94, 0.86), vec3(1.0), t);
   col *= (0.5 + 0.5 * abs(uSun.y) + 0.25) * (1.0 - 0.9 * shadow);
+  col *= 1.0 + max(rip, 0.0) * 1.6;
+  col += vec3(1.0, 0.85, 0.6) * smoothstep(0.3, 0.0, hd) * exp(-uHit.z * 3.0) * uHit.w;
   gl_FragColor = vec4(col, d * 0.92 * uFade);
   #include <colorspace_fragment>
 }
@@ -174,7 +185,7 @@ export function mount(container, options = {}) {
   planet.scale.set(1, 0.94, 1);
   axis.add(planet);
 
-  const ringUniforms = { ...shared, uColor: { value: new THREE.Color(p.ring) }, uReveal: { value: state.reveal }, uFade: { value: 1 } };
+  const ringUniforms = { ...shared, uColor: { value: new THREE.Color(p.ring) }, uReveal: { value: state.reveal }, uFade: { value: 1 }, uHit: { value: new THREE.Vector4(1.8, 0, 0, 0) } };
   const ringGeometry = new THREE.RingGeometry(RING_IN, RING_OUT, preview ? 96 : 192, 1);
   ringGeometry.rotateX(-Math.PI / 2);
   const ring = new THREE.Mesh(
@@ -258,15 +269,126 @@ export function mount(container, options = {}) {
     place(dt);
   });
 
-  // 早送り。自転も、月も、歳差も、しばらく速くなる。
-  function surge() {
+  // 流れ込む小天体と、当たったときに散る破片。
+  const shot = { t: 0, glow: 0 };
+  const meteor = new THREE.Mesh(new THREE.SphereGeometry(0.035, 10, 8), new THREE.MeshBasicMaterial({ color: '#fff1d0', transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+  meteor.visible = false;
+  stage.scene.add(meteor);
+  const from = new THREE.Vector3();
+  const to = new THREE.Vector3();
+  const heading = new THREE.Vector3();
+  const along = new THREE.Vector3(0, 0, 1);
+  const SHARDS = preview ? 24 : 48;
+  const shardPos = new Float32Array(SHARDS * 3);
+  const shardGeometry = new THREE.BufferGeometry();
+  shardGeometry.setAttribute('position', new THREE.BufferAttribute(shardPos, 3));
+  const shardPoints = new THREE.Points(shardGeometry, new THREE.PointsMaterial({ color: '#ffe9c4', size: preview ? 1.6 : 2.4, sizeAttenuation: false, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+  shardPoints.frustumCulled = false;
+  shardPoints.visible = false;
+  axis.add(shardPoints);
+  const shards = Array.from({ length: SHARDS }, () => ({ r: 0, a: 0, vr: 0, va: 0, y: 0, vy: 0 }));
+  let hitLive = false;
+
+  function stepImpact(dt) {
+    const hit = ringUniforms.uHit.value;
+    if (hitLive) {
+      hit.z += dt * (1 + state.surge * 2);
+      if (hit.z > 14) {
+        hitLive = false;
+        hit.w = 0;
+      }
+    }
+    meteor.visible = shot.glow > 0.01;
+    if (meteor.visible) {
+      meteor.position.lerpVectors(from, to, shot.t);
+      meteor.material.opacity = Math.min(1, shot.glow);
+      // 進む向きに長く伸ばして、尾を引いているように見せる。当たったあとは丸く広がって消える。
+      const stretch = shot.t < 1 ? 9 : 1;
+      meteor.scale.set(1, 1, stretch).multiplyScalar(shot.t < 1 ? 1 : 1 + (1 - shot.glow) * 7);
+    }
+    shardPoints.visible = shardPoints.material.opacity > 0.01;
+    if (!shardPoints.visible) return;
+    for (let i = 0; i < SHARDS; i += 1) {
+      const sh = shards[i];
+      sh.r += sh.vr * dt;
+      sh.a += sh.va * dt;
+      sh.y += sh.vy * dt;
+      sh.vr *= Math.exp(-dt * 1.2);
+      sh.vy *= Math.exp(-dt * 1.6);
+      shardPos[i * 3] = Math.cos(sh.a) * sh.r;
+      shardPos[i * 3 + 1] = sh.y;
+      shardPos[i * 3 + 2] = Math.sin(sh.a) * sh.r;
+    }
+    shardGeometry.attributes.position.needsUpdate = true;
+  }
+  stage.onFrame((time, dt) => stepImpact(dt));
+
+  // 環の上の 1 点（半径 r、角度 a）に小天体を当てる。準備: 光の粒が飛んでくる。山場: 光って穴があき、破片が散る。余韻: 波紋が渦に伸びる。
+  function impact(r, a, side = 1) {
     if (stage.reduced) return;
-    animate(state, {
-      surge: [
-        { to: 1, duration: 500, ease: 'outQuad' },
-        { to: 0, duration: 2600, ease: 'inOutSine' },
-      ],
-    });
+    utils.remove(shot);
+    utils.remove(shardPoints.material);
+    system.updateMatrixWorld();
+    to.set(Math.cos(a) * r, 0, Math.sin(a) * r);
+    axis.localToWorld(to);
+    from.set(to.x + side * 4.5, to.y + 3.2, to.z + 3.5);
+    heading.subVectors(to, from).normalize();
+    meteor.quaternion.setFromUnitVectors(along, heading);
+    shot.t = 0;
+    shot.glow = 0;
+    animate(shot, { t: 1, glow: [{ to: 1, duration: 120 }, { to: 1, duration: 300 }], duration: 420, ease: 'inQuad', onComplete: land });
+    function land() {
+      const hit = ringUniforms.uHit.value;
+      hit.set(r, a, 0, 1);
+      hitLive = true;
+      for (const sh of shards) {
+        sh.r = r;
+        sh.a = a;
+        sh.y = 0;
+        sh.vr = (Math.random() - 0.5) * 0.9;
+        sh.va = (Math.random() - 0.3) * 0.9;
+        sh.vy = (Math.random() - 0.5) * 0.5;
+      }
+      shardPoints.material.opacity = 1;
+      animate(shardPoints.material, { opacity: 0, duration: 2600, ease: 'inQuad' });
+      animate(shot, { glow: 0, duration: 520, ease: 'outQuad' });
+      // 当たった衝撃のあと、しばらく時間が早送りになり、波紋が渦に巻かれていく。
+      animate(state, {
+        surge: [
+          { to: 0.7, duration: 700, ease: 'outQuad' },
+          { to: 0, duration: 3200, ease: 'inOutSine' },
+        ],
+      });
+    }
+  }
+
+  const raycaster = new THREE.Raycaster();
+  const plane = new THREE.Plane();
+  const normal = new THREE.Vector3();
+  const origin = new THREE.Vector3();
+  const point = new THREE.Vector3();
+  function onDown(event) {
+    const rect = container.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const nx = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    const ny = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
+    system.updateMatrixWorld();
+    raycaster.setFromCamera({ x: nx, y: ny }, stage.camera);
+    axis.getWorldPosition(origin);
+    normal.set(0, 1, 0).transformDirection(axis.matrixWorld);
+    plane.setFromNormalAndCoplanarPoint(normal, origin);
+    // 押した先が環の面に当たる場所を求める。環から外れていたら、同じ方角の環の上に寄せる。
+    if (raycaster.ray.intersectPlane(plane, point)) {
+      axis.worldToLocal(point);
+      impact(THREE.MathUtils.clamp(Math.hypot(point.x, point.z), RING_IN + 0.12, RING_OUT - 0.12), Math.atan2(point.z, point.x), nx >= 0 ? 1 : -1);
+    } else {
+      surge();
+    }
+  }
+
+  // 外から呼ぶとき。環のどこかに 1 つ当てる。
+  function surge() {
+    impact(RING_IN + 0.2 + Math.random() * (RING_OUT - RING_IN - 0.4), Math.random() * Math.PI * 2, Math.random() < 0.5 ? 1 : -1);
   }
 
   let timer = 0;
@@ -276,14 +398,16 @@ export function mount(container, options = {}) {
     animate(moons, { grow: 1, duration: 900, delay: stagger(250, { start: 900 }), ease: 'outBack(1.6)' });
     if (preview) timer = setInterval(surge, 6000);
   }
-  container.addEventListener('pointerdown', surge);
+  container.addEventListener('pointerdown', onDown);
 
   return {
     surge,
     destroy() {
       clearInterval(timer);
-      container.removeEventListener('pointerdown', surge);
+      container.removeEventListener('pointerdown', onDown);
       utils.remove(state);
+      utils.remove(shot);
+      utils.remove(shardPoints.material);
       utils.remove(moons);
       stage.destroy();
     },

@@ -8,7 +8,7 @@ export const meta = {
   category: 'cyber',
   libs: ['animejs'],
   description:
-    '線と点を乱数でつないで作った架空の文字が、奥・中・手前の層に分かれて降ります。奥は小さく暗く、手前は大きくぼやけて、奥行きが出ます。ポインターの近くの列は速く明るくなり、クリックするとすべての文字が一斉に入れ替わります。',
+    '線と点を乱数でつないで作った架空の文字が、奥・中・手前の層に分かれて降ります。奥は小さく暗く、手前は大きくぼやけて、奥行きが出ます。ポインターの近くの列は速く明るくなり、タップすると雨が止まり、その位置から輪が広がって文字を押しのけ、輪の内側が同じ 1 文字にそろっていきます。そろった文字はやがてほどけて全体が光り、雨が勢いよく降り直します。',
   params: {
     near: { type: 'color', label: '手前の色', default: '#ffb86b' },
     far: { type: 'color', label: '奥の色', default: '#7a4dff' },
@@ -115,6 +115,8 @@ export function mount(container, options = {}) {
   const layerCount = Math.round(p.layers);
   const state = { fade: reduced ? 1 : 0, flash: 0 };
   const pointer = { x: 0.5, inside: false, sx: 0 };
+  // 解読の波。r は輪の半径（px）、power は輪の強さ、lock が 1 のあいだ、輪の内側は同じ 1 文字にそろう。rate は降る速さの倍率。
+  const wave = { x: 0, y: 0, r: 0, power: 0, lock: 0, glyph: 0, rate: 1 };
   let width = 1;
   let height = 1;
   let dpr = 1;
@@ -169,8 +171,23 @@ export function mount(container, options = {}) {
           const row = headRow - k;
           if (row < 0 || row >= layer.rows) continue;
           const tail = 1 - k / stream.length;
-          ctx.globalAlpha = Math.min(1, (tail ** 1.35 * layer.alpha + state.flash * 0.5) * state.fade);
-          ctx.drawImage(atlas, stream.cells[row] * size, k === 0 ? size : 0, size, size, x, row * cell, cell, cell);
+          let px = x;
+          let py = row * cell;
+          let glyph = stream.cells[row];
+          let band = 0;
+          if (wave.power > 0.001 || wave.lock > 0) {
+            const dx = px + cell / 2 - wave.x;
+            const dy = py + cell / 2 - wave.y;
+            const distance = Math.hypot(dx, dy) || 1;
+            const gap = (distance - wave.r) / (cell * 2.4);
+            band = Math.exp(-gap * gap) * wave.power;
+            // 輪の上にある文字は外へ押し出され、輪の内側は同じ文字にそろう。
+            px += (dx / distance) * band * cell * 0.9;
+            py += (dy / distance) * band * cell * 0.9;
+            if (wave.lock > 0 && distance < wave.r) glyph = wave.glyph;
+          }
+          ctx.globalAlpha = Math.min(1, (tail ** 1.35 * layer.alpha + state.flash * 0.5 + band * 0.9) * state.fade);
+          ctx.drawImage(atlas, glyph * size, k === 0 || band > 0.45 ? size : 0, size, size, px, py, cell, cell);
         }
       }
     }
@@ -184,7 +201,7 @@ export function mount(container, options = {}) {
         const x = (stream.col * layer.cell) / width;
         const near = pointer.inside ? Math.max(0, 1 - Math.abs(x - pointer.x) / 0.14) : 0;
         const before = Math.floor(stream.head);
-        stream.head += dt * layer.fall * stream.rate * p.speed * (1 + near * 2.2);
+        stream.head += dt * layer.fall * stream.rate * p.speed * (1 + near * 2.2) * wave.rate;
         const after = Math.floor(stream.head);
         if (after !== before && after >= 0 && after < layer.rows) stream.cells[after] = Math.floor(random() * GLYPHS);
         // 降っている途中の文字も、ときどき別の文字に入れ替える。
@@ -194,10 +211,43 @@ export function mount(container, options = {}) {
     }
   }
 
-  function scramble() {
+  const reshuffle = () => {
     for (const layer of layers) for (const stream of layer.streams) for (let i = 0; i < stream.cells.length; i += 1) stream.cells[i] = Math.floor(random() * GLYPHS);
-    if (reduced) return draw();
-    animate(state, { flash: [1, 0], duration: 700, ease: 'outQuad' });
+  };
+  // 解読。雨が止まり、タップした位置から輪が広がる（準備）→ 輪が文字を押しのけ、内側が同じ 1 文字にそろっていく（山場）
+  // → そろった文字がほどけて全体が光り、雨が勢いよく降り直す（余韻）。
+  function scramble(event) {
+    if (reduced) {
+      reshuffle();
+      return draw();
+    }
+    const at = event?.clientX === undefined ? { px: width * (0.25 + Math.random() * 0.5), py: height * (0.3 + Math.random() * 0.4) } : localPointer(event, root);
+    utils.remove(wave);
+    Object.assign(wave, { x: at.px, y: at.py, r: 0, power: 1, lock: 1, glyph: Math.floor(random() * GLYPHS) });
+    animate(wave, { r: Math.hypot(width, height) * 0.75, duration: 1500, delay: 100, ease: 'inOutSine' });
+    animate(wave, {
+      rate: [
+        { to: 0.03, duration: 160, ease: 'outQuad' },
+        { to: 0.03, duration: 1250 },
+        { to: 3.4, duration: 260, ease: 'inQuad' },
+        { to: 1, duration: 1300, ease: 'outExpo' },
+      ],
+    });
+    animate(wave, {
+      power: [
+        { to: 1, duration: 1350 },
+        { to: 0, duration: 500, ease: 'outQuad' },
+      ],
+    });
+    animate(wave, {
+      lock: [1, 1],
+      duration: 1500,
+      onComplete() {
+        wave.lock = 0;
+        reshuffle();
+        animate(state, { flash: [1, 0], duration: 700, ease: 'outQuad' });
+      },
+    });
   }
 
   build();
@@ -234,11 +284,13 @@ export function mount(container, options = {}) {
   });
   disposer.add(() => timer.pause());
 
+  if (p.preview) disposer.interval(() => scramble(), 5000);
+
   return {
     scramble,
     destroy() {
       disposer.run();
-      utils.remove(state);
+      utils.remove([state, wave]);
       removeRoot(root);
     },
   };

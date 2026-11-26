@@ -8,7 +8,7 @@ export const meta = {
   category: 'scifi',
   libs: ['animejs'],
   description:
-    'SF 映画の操縦席にあるような計器の画面です。枠と目盛りが線で描かれて起動し、回る照準、伸び縮みする計器、波形、数値が動き続けます。SVG だけで描くので、どの大きさでもくっきり表示されます。',
+    'SF 映画の操縦席にあるような計器の画面です。枠と目盛りが線で描かれて起動し、回る照準、伸び縮みする計器、波形、数値が動き続けます。タップすると、その場所へ 4 つの鉤が回りながら狭まって目標を捉えます。捉えた瞬間に輪が広がり、中心の照準から目標へ線が伸び、計器と距離の数値が跳ねて「TARGET LOCK」が点滅し、しばらくして解除されます。SVG だけで描くので、どの大きさでもくっきり表示されます。',
   params: {
     color: { type: 'color', label: '線の色', default: '#5cf2ff' },
     accent: { type: 'color', label: '強調の色', default: '#ff8a3d' },
@@ -109,6 +109,29 @@ export function mount(container, options = {}) {
     ),
   );
 
+  // タップした場所を捉える印。4 つの鉤、広がる輪、中心からの線、短い札でできている。
+  const svg = root.firstChild;
+  const bracket = (dx, dy) => s('path', { class: 'ua-hud__accent', 'stroke-width': 2, d: `M${dx * 22} ${dy * 10} V${dy * 22} H${dx * 10}` });
+  const brackets = s('g', {}, bracket(-1, -1), bracket(1, -1), bracket(1, 1), bracket(-1, 1));
+  const lockRing = s('circle', { class: 'ua-hud__accent', 'stroke-width': 1.2, cx: 0, cy: 0, r: 4 });
+  const lockDot = s('circle', { cx: 0, cy: 0, r: 2.5, style: { fill: 'var(--ua-accent)' } });
+  const lockTag = s('text', { class: 'ua-hud__text', x: 30, y: -22, style: { fill: 'var(--ua-accent)' } }, '');
+  const lockMark = s('g', { opacity: 0 }, brackets, lockRing, lockDot, lockTag);
+  const lockLine = s('line', { class: 'ua-hud__thin', x1: CX, y1: CY, x2: CX, y2: CY, 'stroke-dasharray': '3 5', opacity: 0 });
+  svg.append(lockLine, lockMark);
+  const lock = { spread: 1, turn: 0, mark: 0, ring: 0, line: 0, x: CX, y: CY };
+  let lockCount = 0;
+  let lockTimeline = null;
+  function drawLock() {
+    lockMark.setAttribute('opacity', lock.mark.toFixed(3));
+    brackets.setAttribute('transform', `rotate(${lock.turn.toFixed(1)}) scale(${lock.spread.toFixed(3)})`);
+    lockRing.setAttribute('r', (4 + lock.ring * 70).toFixed(1));
+    lockRing.setAttribute('opacity', (1 - lock.ring).toFixed(3));
+    lockLine.setAttribute('opacity', (lock.line * 0.8).toFixed(3));
+    lockLine.setAttribute('x2', (CX + (lock.x - CX) * lock.line).toFixed(1));
+    lockLine.setAttribute('y2', (CY + (lock.y - CY) * lock.line).toFixed(1));
+  }
+
   const waveState = { phase: 0, amp: 18 };
   function drawWave() {
     const points = Array.from({ length: WAVE_POINTS }, (_, i) => {
@@ -123,7 +146,7 @@ export function mount(container, options = {}) {
   const fades = [headline, right, ...bars.map((b) => b.group)];
   const gaugeDrawables = createDrawable(reticle.gauges);
   const range = { v: 0 };
-  const tracked = [waveState, range, ...bars.map((b) => b.state), ...gaugeDrawables];
+  const tracked = [waveState, range, lock, ...bars.map((b) => b.state), ...gaugeDrawables];
 
   function update() {
     for (const { bar, value, state } of bars) {
@@ -163,6 +186,50 @@ export function mount(container, options = {}) {
     .add(fades, { opacity: [0, 1], duration: 120, ease: steps(3), delay: stagger(90) }, 700)
     .call(update, 1100);
   disposer.add(() => boot.pause());
+
+  // タップ。鉤が狭まる → 捉えた瞬間に輪が広がり、線が伸びて計器が跳ねる → 点滅してから解除する。
+  function acquire(event) {
+    let x = utils.random(250, 560);
+    let y = utils.random(130, 370);
+    const matrix = event ? svg.getScreenCTM() : null;
+    if (matrix) {
+      const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix.inverse());
+      x = Math.min(770, Math.max(30, point.x));
+      y = Math.min(470, Math.max(30, point.y));
+    }
+    lockTimeline?.pause();
+    utils.remove(lock);
+    utils.remove([status, headline]);
+    lock.x = x;
+    lock.y = y;
+    lockCount += 1;
+    lockMark.setAttribute('transform', `translate(${x.toFixed(1)} ${y.toFixed(1)})`);
+    lockTag.textContent = `TGT-${String(lockCount).padStart(2, '0')}  ${Math.round(x)}:${Math.round(y)}`;
+    lockTag.setAttribute('opacity', '0');
+    Object.assign(lock, { spread: 4.2, turn: -135, mark: 0, ring: 0, line: 0 });
+    lockTimeline = createTimeline({ onUpdate: drawLock })
+      .add(lock, { mark: 1, duration: 120, ease: 'linear' }, 0)
+      .add(lock, { spread: [{ to: 0.82, duration: 420, ease: 'inOutQuart' }, { to: 1, duration: 380, ease: 'outElastic(1, .4)' }], turn: { to: 0, duration: 470, ease: 'outQuart' } }, 0)
+      .call(() => {
+        status.textContent = 'TARGET LOCK';
+        headline.textContent = 'TARGET ACQUIRED';
+        lockTag.setAttribute('opacity', '1');
+        animate([status, headline], { opacity: [1, 0.15], duration: 110, ease: steps(1), alternate: true, loop: 9 });
+        update();
+      }, 430)
+      .add(lock, { ring: [0, 1], duration: 900, ease: 'outExpo' }, 430)
+      .add(lock, { line: 1, duration: 420, ease: 'outExpo' }, 430)
+      .add(lock, { mark: 0, line: 0, duration: 500, ease: 'inQuad' }, 2400)
+      .call(() => {
+        status.textContent = 'RANGE KM';
+        headline.textContent = 'NAV SYSTEM ONLINE';
+        utils.set([status], { opacity: 1 });
+        utils.set(headline, { opacity: 1 });
+      }, 2900);
+  }
+  disposer.listen(root, 'pointerdown', acquire);
+  disposer.add(() => lockTimeline?.pause());
+  if (options.preview) disposer.interval(() => acquire(), 4600);
 
   animate(reticle.outer, { rotate: 360, duration: 40000, ease: 'linear', loop: true });
   animate(reticle.middle, { rotate: -360, duration: 70000, ease: 'linear', loop: true });

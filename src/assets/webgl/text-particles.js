@@ -9,7 +9,7 @@ export const meta = {
   category: 'webgl',
   libs: ['three', 'animejs'],
   description:
-    '粒が集まって言葉になり、いったん散ってから次の言葉に組み替わります。ポインターを近づけると粒が逃げます。クリックで次の言葉へ進みます。日本語も使えます。',
+    '粒が集まって言葉になり、いったん散ってから次の言葉に組み替わります。ポインターを近づけると粒が逃げます。クリックすると、その場所から衝撃の輪が走り、近い粒から順に外へ吹き飛んで、次の言葉に組み直ります。日本語も使えます。',
   params: {
     words: { type: 'text', label: '言葉（カンマ区切り）', default: 'MOTION, うごき, three.js, anime.js', maxLength: 120 },
     count: { type: 'range', label: '粒の数', min: 4000, max: 60000, step: 2000, default: 26000 },
@@ -79,17 +79,33 @@ uniform float uScale;
 uniform float uSize;
 uniform float uHover;
 uniform vec2 uPointer;
+uniform vec2 uOrigin;
+uniform float uFromTap;
+uniform float uReach;
+uniform float uShockR;
+uniform float uShockAmp;
 attribute vec3 aTo;
 attribute vec4 aRand;
 varying float vTint;
 varying float vBurst;
 void main(){
-  // 粒ごとに出発を少しずらす。
-  float t = clamp(uMix * 1.5 - aRand.x * 0.5, 0.0, 1.0);
+  // 粒ごとに出発を少しずらす。クリックで始まったときは、クリックした場所に近い粒から先に動く。
+  vec2 fromTap = position.xy * uScale - uOrigin;
+  float near = clamp(length(fromTap) / uReach, 0.0, 1.0);
+  float order = mix(aRand.x, near * 0.82 + aRand.x * 0.18, uFromTap);
+  float t = clamp(uMix * 1.5 - order * 0.5, 0.0, 1.0);
   t = t * t * (3.0 - 2.0 * t);
   vec3 p = mix(position, aTo, t) * uScale;
   float burst = sin(t * 3.14159265);
-  p += (aRand.yzw - 0.5) * burst * 1.8;
+  vec3 scatter = (aRand.yzw - 0.5) * 1.8;
+  vec3 blown = vec3(normalize(fromTap + 0.0001) * (0.5 + aRand.y * 1.7), (aRand.w - 0.5) * 1.8);
+  p += mix(scatter, blown, uFromTap) * burst;
+  // クリックした場所から広がる衝撃の輪。通り過ぎるときに粒が持ち上がる。
+  vec2 fromShock = p.xy - uOrigin;
+  float sf = length(fromShock) - uShockR;
+  float shock = exp(-sf * sf * 12.0) * uShockAmp;
+  p.xy += normalize(fromShock + 0.0001) * shock * 0.2;
+  p.z += shock * 0.6;
   p.xy += vec2(sin(uTime * 1.4 + aRand.y * 40.0), cos(uTime * 1.1 + aRand.z * 40.0)) * 0.006;
   vec2 away = p.xy - uPointer;
   float push = smoothstep(0.75, 0.0, length(away)) * uHover;
@@ -99,7 +115,7 @@ void main(){
   gl_Position = projectionMatrix * mv;
   gl_PointSize = uSize * (0.6 + aRand.w * 0.9) / -mv.z;
   vTint = aRand.x;
-  vBurst = burst + push;
+  vBurst = burst + push + shock;
 }
 `;
 
@@ -139,6 +155,11 @@ export function mount(container, options = {}) {
     uSize: { value: 1 },
     uHover: { value: 0 },
     uPointer: { value: new THREE.Vector2() },
+    uOrigin: { value: new THREE.Vector2() },
+    uFromTap: { value: 0 },
+    uReach: { value: 1 },
+    uShockR: { value: 0 },
+    uShockAmp: { value: 0 },
     uColorA: { value: new THREE.Color(p.colorA) },
     uColorB: { value: new THREE.Color(p.colorB) },
   };
@@ -169,7 +190,7 @@ export function mount(container, options = {}) {
 
   function scheduleNext() {
     clearTimeout(holdTimer);
-    if (words.length > 1 && !stage.reduced) holdTimer = setTimeout(next, p.hold * 1000);
+    if (words.length > 1 && !stage.reduced) holdTimer = setTimeout(() => next(), p.hold * 1000);
   }
   function morph() {
     busy = true;
@@ -179,20 +200,55 @@ export function mount(container, options = {}) {
       ease: 'inOutQuart',
       onComplete() {
         busy = false;
-        if (!destroyed) scheduleNext();
+        if (destroyed) return;
+        // 組み替えの途中でクリックされていたら、続けてもう一度組み替える。
+        if (queued) {
+          queued = false;
+          next(true);
+        } else scheduleNext();
       },
     });
   }
-  function next() {
-    if (busy || destroyed || words.length < 2) return;
+  function next(fromTap = false) {
+    if (busy || destroyed || (words.length < 2 && !fromTap)) return;
+    clearTimeout(holdTimer);
     index = (index + 1) % words.length;
     // いまの並びを出発点に移し、次の言葉を行き先にする。
     fromAttr.array.set(toAttr.array);
     fromAttr.needsUpdate = true;
     toAttr.array.set(sampleText(words[index], count));
     toAttr.needsUpdate = true;
+    uniforms.uFromTap.value = fromTap ? 1 : 0;
     uniforms.uMix.value = 0;
     morph();
+  }
+  let queued = false;
+  // 準備: 衝撃の輪が走る。山場: 近い粒から外へ吹き飛ぶ。余韻: 次の言葉に組み直る。
+  function blast(event) {
+    if (destroyed) return;
+    if (stage.reduced) {
+      if (words.length < 2) return;
+      index = (index + 1) % words.length;
+      toAttr.array.set(sampleText(words[index], count));
+      toAttr.needsUpdate = true;
+      return;
+    }
+    const rect = container.getBoundingClientRect();
+    const view = stage.viewport();
+    const hasPoint = typeof event?.clientX === 'number' && rect.width > 0 && rect.height > 0;
+    const nx = hasPoint ? ((event.clientX - rect.left) / rect.width) * 2 - 1 : 0;
+    const ny = hasPoint ? 1 - ((event.clientY - rect.top) / rect.height) * 2 : 0;
+    const reach = uniforms.uScale.value * 2.1;
+    utils.remove([uniforms.uShockR, uniforms.uShockAmp]);
+    animate(uniforms.uShockR, { value: [0, reach], duration: 1000, ease: 'outCubic' });
+    animate(uniforms.uShockAmp, { value: [1, 0], duration: 1000, ease: 'inQuad' });
+    if (busy) {
+      queued = true;
+      return;
+    }
+    uniforms.uOrigin.value.set((nx * view.width) / 2, (ny * view.height) / 2);
+    uniforms.uReach.value = reach;
+    next(true);
   }
 
   // フォントの読み込みが終わってから描くと、言葉の形が崩れない。
@@ -203,14 +259,14 @@ export function mount(container, options = {}) {
     toAttr.needsUpdate = true;
     if (!stage.reduced) morph();
   });
-  container.addEventListener('click', next);
+  container.addEventListener('click', blast);
 
   return {
     destroy() {
       destroyed = true;
       clearTimeout(holdTimer);
-      container.removeEventListener('click', next);
-      utils.remove(uniforms.uMix);
+      container.removeEventListener('click', blast);
+      utils.remove([uniforms.uMix, uniforms.uShockR, uniforms.uShockAmp]);
       stage.destroy();
     },
   };

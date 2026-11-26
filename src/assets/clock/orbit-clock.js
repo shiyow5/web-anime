@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { animate, utils } from 'animejs';
+import { animate, createTimer, utils } from 'animejs';
 import { createStage } from '../../lib/stage.js';
 import { h } from '../../lib/dom.js';
 import { resolveParams } from '../../lib/params.js';
@@ -10,7 +10,7 @@ export const meta = {
   category: 'clock',
   libs: ['three', 'animejs'],
   description:
-    '時・分・秒を、太陽のまわりを回る 3 つの星で表す時計です。内側の輪が時、中の輪が分、外の輪が秒で、12 時の位置から星までの軌道が明るく光ります。秒の星は 1 秒ごとに弾むように進みます。',
+    '時・分・秒を、太陽のまわりを回る 3 つの星で表す時計です。内側の輪が時、中の輪が分、外の輪が秒で、12 時の位置から星までの軌道が明るく光ります。秒の星は 1 秒ごとに弾むように進みます。タップすると太陽が脈打ち、3 つの星がいったん後ずさりしてから外側の星ほど多く周回する早回しになり、軌道を光で塗りながら減速して今の時刻に戻ります。',
   params: {
     colorHour: { type: 'color', label: '時の星の色', default: '#ffb347' },
     colorMinute: { type: 'color', label: '分の星の色', default: '#7de3ff' },
@@ -149,6 +149,11 @@ export function mount(container, options = {}) {
 
   // 秒の星は、整数の秒へ弾みながら進める。0 秒へ戻るときに逆回りしないよう、通し番号で持つ。
   const state = { second: 0 };
+  // タップでの早回し。星ごとの上乗せの周回数と、太陽の脈、触った方向への傾き。
+  const laps = { hour: { v: 0 }, minute: { v: 0 }, second: { v: 0 } };
+  const LAP_COUNT = { hour: 1, minute: 2, second: 4 };
+  const fx = { sun: 0, kickX: 0, kickY: 0 };
+  const sizeAttribute = bodyGeometry.getAttribute('aSize');
   let lastSecond = -1;
   let secondBase = 0;
 
@@ -169,19 +174,59 @@ export function mount(container, options = {}) {
       lastSecond = second;
       if (readout) readout.textContent = [now.getHours(), now.getMinutes(), second].map((n) => String(n).padStart(2, '0')).join(':');
     }
-    const shown = { hour: fractions.hour, minute: fractions.minute, second: (((state.second % 60) + 60) % 60) / 60 };
+    const wrap = (value) => ((value % 1) + 1) % 1;
+    const shown = {
+      hour: wrap(fractions.hour + laps.hour.v),
+      minute: wrap(fractions.minute + laps.minute.v),
+      second: wrap((((state.second % 60) + 60) % 60) / 60 + laps.second.v),
+    };
+    sizeAttribute.setX(0, 2.6 + fx.sun * 1.6);
+    sizeAttribute.needsUpdate = true;
     rings.forEach((ring, index) => {
       ring.uniforms.uProgress.value = shown[ring.key];
       bodyPositions.set(onRing(ring.radius, shown[ring.key]), (index + 1) * 3);
     });
     bodyAttribute.needsUpdate = true;
-    system.rotation.x = -p.tilt + stage.pointer.sy * 0.25;
-    system.rotation.y = stage.pointer.sx * 0.35;
+    system.rotation.x = -p.tilt + stage.pointer.sy * 0.25 + fx.kickY;
+    system.rotation.y = stage.pointer.sx * 0.35 + fx.kickX;
   });
+
+  // タップ。太陽が脈打ち、星が少し後ずさりしてから早回しになる。外の星から順に走り出し、内の星が最後に収まる。
+  function rush(x = 0, y = 0) {
+    if (stage.reduced) return;
+    const order = ['second', 'minute', 'hour'];
+    order.forEach((key, index) => {
+      const lap = laps[key];
+      utils.remove(lap);
+      const goal = Math.floor(lap.v + 0.5) + LAP_COUNT[key];
+      animate(lap, {
+        v: [
+          { to: lap.v - 0.03, duration: 180, ease: 'outQuad' },
+          { to: goal, duration: 1700 + index * 350, ease: 'inOutCubic' },
+        ],
+        delay: index * 120,
+        onComplete() {
+          lap.v = 0;
+        },
+      });
+    });
+    utils.remove(fx);
+    animate(fx, {
+      sun: [{ to: 1, duration: 160, ease: 'outQuad' }, { to: 0, duration: 1500, ease: 'outElastic(1, .4)' }],
+      kickX: [{ to: x * 0.45, duration: 200, ease: 'outQuad' }, { to: 0, duration: 1900, ease: 'outElastic(1, .45)' }],
+      kickY: [{ to: -y * 0.35, duration: 200, ease: 'outQuad' }, { to: 0, duration: 1900, ease: 'outElastic(1, .45)' }],
+    });
+  }
+  const onPointerDown = () => rush(stage.pointer.x, stage.pointer.y);
+  container.addEventListener('pointerdown', onPointerDown);
+  const auto = p.preview && !stage.reduced ? createTimer({ duration: 5400, loop: true, onLoop: () => rush(0.4, 0.3) }) : null;
 
   return {
     destroy() {
+      auto?.pause();
+      container.removeEventListener('pointerdown', onPointerDown);
       utils.remove(state);
+      utils.remove([fx, laps.hour, laps.minute, laps.second]);
       readout?.remove();
       stage.destroy();
     },

@@ -11,7 +11,7 @@ export const meta = {
   category: 'fantasy',
   libs: ['three', 'animejs'],
   description:
-    '古い真鍮の歯車で動く天球儀です。台座の歯車列が回ると、外周に歯を刻んだ 3 本の輪が、それぞれ別の傾きの軸で回り、輪を支える枠も縦の軸で向きを変えます。輪には小さな天体が載り、中心の魔法の光が内側から真鍮を照らします。ポインターで傾き、クリックで光が強まって一気に進みます。',
+    '古い真鍮の歯車で動く天球儀です。台座の歯車列が回ると、外周に歯を刻んだ 3 本の輪が、それぞれ別の傾きの軸で回り、輪を支える枠も縦の軸で向きを変えます。輪には小さな天体が載り、中心の魔法の光が内側から真鍮を照らします。ポインターで傾きます。タップすると天体の直列が起きます。歯車列が少し巻き戻って止まり、3 本の輪が 1 本ずつ同じ面へ倒れ、載っている天体が中心から一列に並びます。並んだ瞬間に中心の光が強まり、天体を貫く光の筋が走ります。そのあと輪は外側から順に元の傾きへ戻り、歯車が勢いよく回って落ち着きます。',
   params: {
     brass: { type: 'color', label: '真鍮の色', default: '#c79a4b' },
     magic: { type: 'color', label: '魔法の光の色', default: '#9c8bff' },
@@ -255,6 +255,16 @@ export function mount(container, options = {}) {
 
   const state = { turn: 0 };
   const kick = { v: 0 };
+  // 直列で使う値。rate は歯車列の速さの倍率、ray は光の筋の濃さ、lines は輪ごとの「そろい具合」。
+  const drive = { rate: 1, ray: 0, tiltX: 0, tiltY: 0 };
+  const lines = rings.map(() => ({ v: 0 }));
+  const ROW = 0.9;
+  const wrap = (angle) => Math.atan2(Math.sin(angle), Math.cos(angle));
+  const rayGeometry = new THREE.PlaneGeometry(2.05, 0.035);
+  rayGeometry.translate(1.025, 0, 0);
+  const ray = new THREE.Mesh(rayGeometry, glow(p.magic, 0));
+  ray.rotation.z = ROW;
+  sphere.add(ray);
   const intros = rings.map(() => ({ v: stage.reduced ? 1 : 0 }));
   const glowIn = { v: stage.reduced ? 1 : 0 };
 
@@ -270,9 +280,12 @@ export function mount(container, options = {}) {
       const v = intros[i].v;
       swing.rotation.z = base * spec.swing + i * 1.1 + (1 - v) * 3;
       // 登場では、輪が水平から起き上がって、それぞれの傾きに収まる。
-      tilt.rotation.x = spec.tilt * v + (1 - v) * (i % 2 ? -1.6 : 1.6);
+      const line = Math.min(1, Math.max(0, lines[i].v));
+      tilt.rotation.x = spec.tilt * v * (1 - lines[i].v) + (1 - v) * (i % 2 ? -1.6 : 1.6);
       swing.scale.setScalar(Math.max(0.001, v));
-      spin.rotation.z = base * spec.spin;
+      // 直列のあいだは、輪を余分に送って、載っている天体を決まった向きの一列へ寄せる。
+      const natural = base * spec.spin;
+      spin.rotation.z = natural + wrap(ROW - swing.rotation.z - i * 2.1 - natural) * line;
       pinion.rotation.z = meshAngle(spin.rotation.z, spec.teeth, spec.pinion, Math.PI / 2);
     });
     circle.rotation.z = -base * 0.4;
@@ -282,6 +295,9 @@ export function mount(container, options = {}) {
     sunLight.intensity = 10 * glowIn.v * (1 + kick.v * 2);
     motes.rotation.set(time * 0.05, time * 0.03, time * 0.08);
     motes.material.opacity = 0.8 * glowIn.v;
+    motes.scale.setScalar(1 + kick.v * 0.35);
+    ray.material.opacity = drive.ray * 0.9;
+    ray.scale.y = 1 + drive.ray * 2;
   }
 
   stage.onResize(() => {
@@ -291,11 +307,11 @@ export function mount(container, options = {}) {
     rig.position.y = 0.22 * scale;
   });
   stage.onFrame((time, dt) => {
-    state.turn += dt * p.speed * 0.32 * (1 + kick.v * 5);
+    state.turn += dt * p.speed * 0.32 * drive.rate;
     place(time);
     // 全体も向きを変える。見下ろす角度がゆっくり揺れ、台座ごと回る。
-    rig.rotation.x = 0.34 + Math.sin(time * 0.19) * 0.1 - stage.pointer.sy * 0.25;
-    rig.rotation.y = time * 0.07 + stage.pointer.sx * 0.5;
+    rig.rotation.x = 0.34 + Math.sin(time * 0.19) * 0.1 - stage.pointer.sy * 0.25 + drive.tiltX;
+    rig.rotation.y = time * 0.07 + stage.pointer.sx * 0.5 + drive.tiltY;
   });
   if (stage.reduced) {
     rig.rotation.set(0.34, 0.4, 0);
@@ -303,12 +319,56 @@ export function mount(container, options = {}) {
   }
   place(0);
 
-  function flare() {
+  // 天体の直列。歯車列が巻き戻って止まり、輪が 1 本ずつ同じ面へ倒れて天体が一列に寄る（準備）→ 並んだ瞬間に
+  // 中心の光が強まり、光の筋が天体を貫く（山場）→ 輪が外側から順に元の傾きへ戻り、歯車が勢いよく回って落ち着く（余韻）。
+  function flare(event) {
     if (stage.reduced) return;
-    utils.remove(kick);
-    animate(kick, { v: [1, 0], duration: 1800, ease: 'outExpo' });
+    const rect = container.getBoundingClientRect();
+    const nx = event?.clientX === undefined ? 0 : ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    const ny = event?.clientY === undefined ? 0 : ((event.clientY - rect.top) / rect.height) * 2 - 1;
+    utils.remove([kick, drive, ...lines]);
+    animate(drive, {
+      rate: [
+        { to: -2.2, duration: 260, ease: 'outQuad' },
+        { to: 0, duration: 320, ease: 'inOutQuad' },
+        { to: 0, duration: 1200 },
+        { to: 7, duration: 350, ease: 'inQuad' },
+        { to: 1, duration: 1700, ease: 'outExpo' },
+      ],
+    });
+    animate(drive, {
+      ray: [
+        { to: 0, duration: 1050 },
+        { to: 1, duration: 140, ease: 'outQuad' },
+        { to: 0, duration: 900, ease: 'outQuad' },
+      ],
+    });
+    animate(drive, {
+      tiltX: [{ to: ny * 0.28, duration: 320, ease: 'outQuad' }, { to: 0, duration: 1900, ease: 'outElastic(1, .55)' }],
+      tiltY: [{ to: nx * 0.4, duration: 320, ease: 'outQuad' }, { to: 0, duration: 1900, ease: 'outElastic(1, .55)' }],
+    });
+    const last = lines.length - 1;
+    lines.forEach((line, i) => {
+      const down = 200 + i * 130;
+      const up = 1900 + (last - i) * 140;
+      animate(line, {
+        v: [
+          { to: 1, duration: 560, delay: down, ease: 'inOutQuart' },
+          { to: 1, duration: Math.max(1, up - down - 560) },
+          { to: 0, duration: 1100, ease: 'outBack(1.8)' },
+        ],
+      });
+    });
+    animate(kick, {
+      v: [
+        { to: -0.3, duration: 900, ease: 'inOutQuad' },
+        { to: 1, duration: 160, delay: 140, ease: 'outQuad' },
+        { to: 0, duration: 1800, ease: 'outExpo' },
+      ],
+    });
   }
   container.addEventListener('pointerdown', flare);
+  const auto = p.preview && !stage.reduced ? setInterval(() => flare(), 6000) : 0;
 
   if (!stage.reduced) {
     animate(intros, { v: 1, duration: 1900, ease: 'outExpo', delay: stagger(260, { start: 200 }) });
@@ -319,7 +379,8 @@ export function mount(container, options = {}) {
     flare,
     destroy() {
       container.removeEventListener('pointerdown', flare);
-      utils.remove([state, kick, glowIn, ...intros]);
+      clearInterval(auto);
+      utils.remove([state, kick, drive, glowIn, ...intros, ...lines]);
       stage.destroy();
     },
   };

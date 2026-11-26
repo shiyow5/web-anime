@@ -8,7 +8,7 @@ export const meta = {
   category: 'nature',
   libs: ['three'],
   description:
-    '桜の花びらが、くるくる回りながら舞い落ちます。1 枚ずつ大きさ、色、回り方が違い、風の向きはポインターの左右の位置で変わります。和風のサイトや、春の催しの告知に合います。',
+    '桜の花びらが、くるくる回りながら舞い落ちます。1 枚ずつ大きさ、色、回り方が違い、風の向きはポインターの左右の位置で変わります。クリックするとつむじ風が起き、花びらがその場所へ吸い寄せられてから、渦を巻いて外へ吹き飛び、風が揺り戻して静まります。和風のサイトや、春の催しの告知に合います。',
   params: {
     count: { type: 'range', label: '花びらの数', min: 30, max: 900, step: 10, default: 320 },
     colorA: { type: 'color', label: '花びらの色 A', default: '#ffb7c9' },
@@ -26,6 +26,7 @@ const vertexShader = /* glsl */ `
 uniform float uTime;
 uniform float uSpeed;
 uniform float uWind;
+uniform vec3 uGust;
 attribute vec3 aOffset;
 attribute vec4 aSeed;
 varying float vShade;
@@ -43,10 +44,28 @@ void main(){
   c.x = mod(c.x + ${(WIDTH / 2).toFixed(1)}, ${WIDTH.toFixed(1)}) - ${(WIDTH / 2).toFixed(1)};
   c.z += cos(tt * 0.7) * 0.3;
 
+  // つむじ風。押した場所へ吸い寄せ（準備）、輪になって渦を巻きながら外へ飛ばす（山場）。
+  // 位置は毎回もとの軌道から計算するので、輪が通り過ぎると花びらは自然に元の流れへ戻る。
+  float ga = uTime - uGust.z - aSeed.y * 0.18;
+  float whirl = 0.0;
+  if (ga > 0.0 && ga < 7.0) {
+    float persp = 7.0 / (7.0 - c.z);
+    vec2 gd = c.xy * persp - uGust.xy;
+    float dist = length(gd) + 0.001;
+    vec2 dir = gd / dist;
+    float pull = smoothstep(0.0, 0.16, ga) * smoothstep(0.5, 0.26, ga) * exp(-dist * 0.45);
+    float blow = max(ga - 0.32, 0.0);
+    float ring = exp(-pow((dist - blow * 3.0) * 0.7, 2.0)) * exp(-blow * 0.75) * step(0.32, ga);
+    vec2 push = -dir * pull * min(dist, 2.2) * 0.85 + dir * ring * 1.5 + vec2(-dir.y, dir.x) * ring * 2.4;
+    c.xy += push / persp;
+    c.y += ring * 0.5;
+    whirl = ring * 9.0 + pull * 5.0;
+  }
+
   // 花びらを少し反らせてから、3 つの軸で回す。
   vec3 q = position * (0.16 + aSeed.w * 0.2);
   q.z += q.x * q.x * 2.2;
-  mat3 turn = rotY(tt * 0.5) * rotZ(tt * 0.9 + aSeed.x * 6.0) * rotX(tt * 1.3);
+  mat3 turn = rotY(tt * 0.5 + whirl * 0.6) * rotZ(tt * 0.9 + aSeed.x * 6.0 + whirl) * rotX(tt * 1.3 + whirl * 0.8);
   vec3 n = turn * vec3(0.0, 0.0, 1.0);
   vShade = 0.72 + 0.28 * abs(dot(n, normalize(vec3(0.3, 0.8, 0.5))));
   vMix = aSeed.z;
@@ -97,6 +116,7 @@ export function mount(container, options = {}) {
     uTime: { value: 0 },
     uSpeed: { value: p.speed },
     uWind: { value: p.wind },
+    uGust: { value: new THREE.Vector3(0, 0, -100) },
     uA: { value: new THREE.Color(p.colorA) },
     uB: { value: new THREE.Color(p.colorB) },
   };
@@ -105,10 +125,39 @@ export function mount(container, options = {}) {
   stage.scene.add(petals);
   stage.onDispose(() => base.dispose());
 
+  let now = 0;
+  let sway = 0;
   stage.onFrame((time) => {
+    now = time;
     uniforms.uTime.value = time;
-    uniforms.uWind.value = p.wind + stage.pointer.sx * 1.2;
+    // 余韻: つむじ風のあと、風が左右に揺り戻しながら静まる。
+    const after = time - uniforms.uGust.value.z - 0.5;
+    const rebound = after > 0 && after < 8 ? sway * Math.exp(-after * 0.7) * Math.sin(after * 2.4) : 0;
+    uniforms.uWind.value = p.wind + stage.pointer.sx * 1.2 + rebound;
   });
 
-  return { destroy: () => stage.destroy() };
+  function gustAt(nx, ny) {
+    if (stage.reduced) return;
+    const view = stage.viewport();
+    uniforms.uGust.value.set((nx - 0.5) * view.width, (0.5 - ny) * view.height, now);
+    // 押した側から反対側へ向かって揺り戻す。
+    sway = nx >= 0.5 ? -0.5 : 0.5;
+  }
+  function gust(event) {
+    const rect = container.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    gustAt((event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height);
+  }
+  container.addEventListener('pointerdown', gust);
+  // 一覧では、数秒おきに場所を変えてつむじ風を見せる。
+  const auto = p.preview && !stage.reduced ? setInterval(() => gustAt(0.25 + Math.random() * 0.5, 0.3 + Math.random() * 0.4), 5200) : 0;
+
+  return {
+    gust: gustAt,
+    destroy() {
+      clearInterval(auto);
+      container.removeEventListener('pointerdown', gust);
+      stage.destroy();
+    },
+  };
 }

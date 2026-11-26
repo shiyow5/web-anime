@@ -1,5 +1,5 @@
 import { animate, createTimer, utils } from 'animejs';
-import { createDisposer, createRoot, h, injectStyle, prefersReducedMotion, removeRoot } from '../../lib/dom.js';
+import { createDisposer, createRoot, h, injectStyle, prefersReducedMotion, removeRoot, localPointer } from '../../lib/dom.js';
 import { resolveParams } from '../../lib/params.js';
 
 export const meta = {
@@ -8,7 +8,7 @@ export const meta = {
   category: 'pixel',
   libs: ['animejs'],
   description:
-    'いまの絵が四角い塊ごとに光って縮み、崩れ落ちて、下から次の絵が現れます。夕日の海、夜の山、昼の丘の 3 枚を順に切り替えます。クリックするか、戻り値の go() を呼ぶと、好きなときに切り替わります。場面転換やスライドの切り替えに使えます。',
+    'いまの絵が四角い塊ごとに光って縮み、崩れ落ちて、下から次の絵が現れます。夕日の海、夜の山、昼の丘の 3 枚を順に切り替えます。クリックすると、押した場所の塊が最初に光り、そこから輪が広がるように崩れが周りへ伝わって、次の絵に切り替わります。戻り値の go() を呼んでも切り替わります。場面転換やスライドの切り替えに使えます。',
   params: {
     pattern: {
       type: 'select',
@@ -226,6 +226,7 @@ export function mount(container, options = {}) {
   let current = 0;
   let next = 0;
   let moving = false;
+  let origin = null;
   let idle = 0;
   let destroyed = false;
 
@@ -246,7 +247,10 @@ export function mount(container, options = {}) {
     // 下の段から描く。上の塊が落ちてきたとき、下の塊の上に重なる。
     for (let row = rows - 1; row >= 0; row -= 1) {
       for (let col = 0; col < cols; col += 1) {
-        const order = blockOrder(p.pattern, col, row, cols, rows);
+        // 押した場所があれば、そこからの距離の順に崩す。無ければ設定の模様の順。
+        const order = origin
+          ? Math.min(1, (Math.hypot(col + 0.5 - origin.col, row + 0.5 - origin.row) / origin.far) * 0.9 + hash(col * 17.3 + row * 71.9) * 0.1)
+          : blockOrder(p.pattern, col, row, cols, rows);
         const local = (state.progress * (1 + SPREAD) - order) / SPREAD;
         if (local >= 1) continue;
         const x = col * size;
@@ -276,8 +280,16 @@ export function mount(container, options = {}) {
   }
 
   // index を省くと、次の絵へ進む。切り替えの途中に呼ばれたときは何もしない。
-  function go(index) {
+  function go(index, at) {
     if (destroyed || moving) return;
+    origin = null;
+    if (at && view.scale > 0) {
+      const col = at.px / view.scale / size;
+      const row = at.py / view.scale / size;
+      const cols = Math.ceil(view.w / size);
+      const rows = Math.ceil(view.h / size);
+      origin = { col, row, far: Math.max(1, Math.hypot(Math.max(col, cols - col), Math.max(row, rows - row))) };
+    }
     const target = Number.isInteger(index) ? ((index % SCENE_COUNT) + SCENE_COUNT) % SCENE_COUNT : (current + 1) % SCENE_COUNT;
     if (target === current) return;
     idle = 0;
@@ -305,7 +317,7 @@ export function mount(container, options = {}) {
     if (reduced) draw();
   });
   view.fit();
-  disposer.listen(root, 'pointerdown', () => go());
+  disposer.listen(root, 'pointerdown', (event) => go(undefined, localPointer(event, root)));
 
   const destroyBase = () => {
     destroyed = true;

@@ -12,7 +12,7 @@ export const meta = {
   category: 'scifi',
   libs: ['three', 'animejs'],
   description:
-    '立方体の 6 つの面に大きなかさ歯車があり、面と面の境目にある 12 個の小さなかさ歯車を介して、18 個すべてが連動して回ります。歯数は 20 と 10 で、小さいほうが 2 倍の速さで逆向きに回ります。立方体そのものも 2 つの軸でゆっくり回り、クリックすると回転の向きが反転します。機構や連携を表す場面に使えます。',
+    '立方体の 6 つの面に大きなかさ歯車があり、面と面の境目にある 12 個の小さなかさ歯車を介して、18 個すべてが連動して回ります。歯数は 20 と 10 で、小さいほうが 2 倍の速さで逆向きに回ります。立方体そのものも 2 つの軸でゆっくり回り、クリックすると、歯車が面の大歯車から順に軸に沿って外へ抜けてかみ合いが外れ、回転が止まります。そこから逆向きに勢いよく回り出し、歯車が 1 個ずつ弾みながら差し込まれて、行き過ぎた速さが元へ落ち着きます。機構や連携を表す場面に使えます。',
   params: {
     metal: { type: 'color', label: '面の歯車の色', default: '#9fb2cc' },
     idler: { type: 'color', label: '境目の歯車の色', default: '#e0863a' },
@@ -207,6 +207,8 @@ export function mount(container, options = {}) {
 
   const state = { angle: 0, dir: 1 };
   const intros = gears.map(() => ({ v: stage.reduced ? 1 : 0 }));
+  // クリックで歯車を軸に沿って引き抜く量。
+  const pulls = gears.map(() => ({ v: 0 }));
 
   function place() {
     faces.forEach((gear) => {
@@ -217,10 +219,10 @@ export function mount(container, options = {}) {
     });
     gears.forEach((gear, i) => {
       const v = intros[i].v;
-      gear.holder.position.copy(gear.axis).multiplyScalar((1 - v) * 2.4);
+      gear.holder.position.copy(gear.axis).multiplyScalar((1 - v) * 2.4 + pulls[i].v * 0.34);
       gear.holder.scale.setScalar(Math.max(0.001, v));
     });
-    const mix = (state.dir + 1) / 2;
+    const mix = Math.min(1, Math.max(0, (state.dir + 1) / 2));
     lineMaterial.color.copy(reverseColor).lerp(lightColor, mix);
     rim.color.copy(lineMaterial.color);
     // 光る線だけがにじむように、明るさを 1 より上へ持ち上げる。
@@ -251,8 +253,20 @@ export function mount(container, options = {}) {
       place();
       return;
     }
+    // 引き抜いて止める → 逆向きに勢いよく回す → 1 個ずつ差し込み直して落ち着かせる。
     utils.remove(state);
-    animate(state, { dir: target, duration: 1100, ease: 'inOutQuad' });
+    animate(state, {
+      dir: [
+        { to: 0, duration: 380, ease: 'outQuad' },
+        { to: target * 3.2, duration: 420, ease: 'outQuad' },
+        { to: target, duration: 1500, ease: 'outElastic(1, .5)' },
+      ],
+    });
+    utils.remove(pulls);
+    animate(pulls, {
+      v: [{ to: 1, duration: 340, ease: 'outBack(2.5)' }, { to: 0, duration: 620, ease: 'outBounce', delay: 420 }],
+      delay: stagger(28),
+    });
   }
   container.addEventListener('pointerdown', reverse);
 
@@ -268,7 +282,7 @@ export function mount(container, options = {}) {
     destroy() {
       clearInterval(timer);
       container.removeEventListener('pointerdown', reverse);
-      utils.remove([state, ...intros]);
+      utils.remove([state, ...intros, ...pulls]);
       stage.destroy();
     },
   };

@@ -8,7 +8,7 @@ export const meta = {
   category: 'pixel',
   libs: ['animejs'],
   description:
-    '砂時計、数字つきの進捗の棒、順に跳ねる粒、回る輪の 4 種類のローダーを、ドット絵で並べます。設定で 1 種類だけを選ぶと、枠いっぱいに大きく出ます。クリックすると枠が光り、輪が一時的に速く回ります。読み込み中や処理待ちの表示に使えます。',
+    '砂時計、数字つきの進捗の棒、順に跳ねる粒、回る輪の 4 種類のローダーを、ドット絵で並べます。設定で 1 種類だけを選ぶと、枠いっぱいに大きく出ます。クリックすると、読み込みが一気に終わります。砂が落ちきり、棒が端まで伸びて「OK!」が点滅し、粒はそろって波打ち、輪は全部が灯ってから、順に消えて最初からやり直します。読み込み中や処理待ちの表示に使えます。',
   params: {
     kind: {
       type: 'select',
@@ -49,6 +49,9 @@ const GLYPHS = {
   8: ['111', '101', '111', '101', '111'],
   9: ['111', '101', '111', '001', '111'],
   '%': ['101', '001', '010', '100', '101'],
+  O: ['111', '101', '101', '101', '111'],
+  K: ['101', '101', '110', '101', '101'],
+  '!': ['010', '010', '010', '000', '010'],
 };
 const SEGMENTS = 7;
 const DOTS = 4;
@@ -117,7 +120,7 @@ export function mount(container, options = {}) {
     shadow: mix(p.background, '#000000', 0.45),
     segments: Array.from({ length: SEGMENTS }, (_, i) => mix(p.color, p.accent, i / (SEGMENTS - 1))),
   };
-  const state = { cycle: reduced ? 0.45 : 0, progress: reduced ? 0.6 : 0, pulse: 0 };
+  const state = { cycle: reduced ? 0.45 : 0, progress: reduced ? 0.6 : 0, pulse: 0, done: 0 };
   const dots = Array.from({ length: DOTS }, (_, i) => ({ y: reduced && i === 1 ? -0.8 : 0 }));
   let time = 0;
   let destroyed = false;
@@ -133,7 +136,8 @@ export function mount(container, options = {}) {
     const flip = Math.max(0, (state.cycle - 0.8) / 0.2);
     // ひっくり返す間は、横幅を縮めてから戻す。半分を過ぎたら、砂が上に戻った絵にする。
     const squeeze = Math.abs(Math.cos(flip * Math.PI));
-    const sand = flip > 0.5 ? 0 : sandTime;
+    // 一気に終わらせるときは、砂を落としきる。
+    const sand = state.done > 0 ? Math.max(flip > 0.5 ? 0 : sandTime, state.done) : flip > 0.5 ? 0 : sandTime;
     const box = (x, y, w, hgt, color) => rect(20 + (x - 20) * squeeze, y, Math.max(0.5, w * squeeze), hgt, color);
     box(9, 4, 22, 3, colors.frame);
     box(9, 33, 22, 3, colors.frame);
@@ -163,8 +167,11 @@ export function mount(container, options = {}) {
   }
 
   function drawBar(rect) {
-    const filled = Math.round(state.progress * SEGMENTS);
-    drawText(rect, `${Math.round((filled / SEGMENTS) * 100)}%`, 8);
+    const filled = Math.round((state.progress + (1 - state.progress) * state.done) * SEGMENTS);
+    // 端まで届いたら、数字のかわりに「OK!」を点滅させる。
+    if (state.done > 0.97) {
+      if (Math.floor(time * 7) % 2 === 0) drawText(rect, 'OK!', 8);
+    } else drawText(rect, `${Math.round((filled / SEGMENTS) * 100)}%`, 8);
     rect(4, 17, 32, 9, colors.frame);
     rect(5, 18, 30, 7, colors.shadow);
     for (let i = 0; i < SEGMENTS; i += 1) {
@@ -177,7 +184,7 @@ export function mount(container, options = {}) {
   function drawDots(rect) {
     dots.forEach((dot, i) => {
       const x = 5 + i * 8.5;
-      const y = 24 + dot.y * 13;
+      const y = 24 + (dot.y * (1 - state.done) - state.done * (0.5 + 0.5 * Math.sin(time * 13 - i * 1.3)) * 0.9) * 13;
       const high = dot.y < -0.4;
       rect(x + (high ? 1 : 0), 31, high ? 2 : 4, 1, colors.shadow);
       const color = i % 2 === 0 ? colors.main : p.accent;
@@ -192,7 +199,9 @@ export function mount(container, options = {}) {
     for (let i = 0; i < 8; i += 1) {
       const angle = (i / 8) * Math.PI * 2 - Math.PI / 2;
       const distance = (head - i + 8) % 8;
-      const color = distance === 0 ? colors.light : distance === 1 ? colors.main : distance <= 4 ? colors.trail[distance - 2] : colors.dim;
+      // 終わりに近づくほど、灯る数が増える。全部が灯ったら点滅する。
+      const lit = state.done > 0 && i < Math.round(state.done * 8);
+      const color = lit ? (state.done > 0.97 && Math.floor(time * 7) % 2 ? colors.light : colors.main) : distance === 0 ? colors.light : distance === 1 ? colors.main : distance <= 4 ? colors.trail[distance - 2] : colors.dim;
       rect(Math.round(20 + Math.cos(angle) * 11) - 2, Math.round(20 + Math.sin(angle) * 11) - 2, 4, 4, color);
     }
     const beat = Math.floor(time * 3 * p.speed) % 2;
@@ -234,6 +243,14 @@ export function mount(container, options = {}) {
   function pulse() {
     if (destroyed || reduced) return;
     animate(state, { pulse: [1, 0], duration: 900, ease: 'outQuad' });
+    // 準備: 一気に進む。山場: 終わった合図が点滅する。余韻: ほどけて最初からやり直す。
+    animate(state, {
+      done: [
+        { to: 1, duration: 420, ease: 'outQuad' },
+        { to: 1, duration: 1100 },
+        { to: 0, duration: 380, ease: 'inQuad' },
+      ],
+    });
   }
 
   const view = createPixelView(root, disposer, single ? 48 : 96, single ? 44 : 88, () => {

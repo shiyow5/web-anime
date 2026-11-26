@@ -9,7 +9,7 @@ export const meta = {
   category: 'nature',
   libs: ['three'],
   description:
-    '夕暮れの雪原に雪が降ります。近い雪は大きく速く、遠い雪は小さくゆっくり落ちるので、奥行きが感じられます。ポインターを左右に動かすと風向きが変わり、クリックすると突風が吹きます。手前には雪をかぶった木と小屋の影を置いています。',
+    '夕暮れの雪原に雪が降ります。近い雪は大きく速く、遠い雪は小さくゆっくり落ちるので、奥行きが感じられます。ポインターを左右に動かすと風向きが変わり、クリックするとその場所につむじ風が起きます。雪が吸い寄せられて渦を巻き、渦は雪煙を上げながら反対側へ流れ去ります。通り道の木は枝の雪を落とし、雪原には風の跡がしばらく残ります。手前には雪をかぶった木と小屋の影を置いています。',
   params: {
     count: { type: 'range', label: '雪の量', min: 100, max: 3000, step: 50, default: 1300 },
     speed: { type: 'range', label: '落ちる速さ', min: 0.2, max: 3, step: 0.1, default: 1 },
@@ -25,6 +25,7 @@ const BOX = { width: 22, height: 12 };
 const sceneFragment = /* glsl */ `
 uniform vec2 uRes;
 uniform float uShift;
+uniform vec4 uTrail;
 uniform vec3 uTop;
 uniform vec3 uBottom;
 varying vec2 vUv;
@@ -65,6 +66,10 @@ void main(){
   float x = (vUv.x - 0.5) * aspect;
   float y = vUv.y;
   vec3 col = mix(uBottom, uTop, smoothstep(0.2, 0.95, y));
+  // つむじ風の通り道。始点から今の位置までの帯で、木の雪が落ち、雪原に跡が付く。
+  float lo = min(uTrail.x, uTrail.y);
+  float hi = max(uTrail.x, uTrail.y);
+  float inTrail = smoothstep(lo - 0.06, lo + 0.02, x) * smoothstep(hi + 0.06, hi - 0.02, x) * uTrail.z;
 
   // 月と、そのまわりの明かり。
   float md = length(vec2(x, y) - vec2(aspect * 0.24, 0.77));
@@ -82,13 +87,15 @@ void main(){
   vec3 midCol = mix(uTop, SNOW, 0.5);
   col = mix(col, mix(midCol * 0.82, midCol, smoothstep(mid - 0.1, mid, y)), smoothstep(mid + 0.003, mid, y));
   vec2 small = trees(vec2(xs, y), 5.0, 2.0, 0.0, 0.07, 0.13);
-  col = mix(col, mix(uTop * 0.75, SNOW, small.y * 0.55), small.x);
+  col = mix(col, mix(uTop * 0.75, SNOW, small.y * 0.55 * (1.0 - inTrail * 0.7)), small.x);
 
   // 手前の雪原。くぼみに淡い影を落とす。
   xs = x + uShift * 0.05;
   float ground = groundLine(xs);
   vec3 groundCol = mix(mix(uTop, SNOW, 0.62), SNOW, smoothstep(ground - 0.17, ground, y));
   groundCol *= 0.94 + 0.06 * sin(xs * 9.0 + y * 40.0);
+  float scour = exp(-pow((y - (ground - 0.05)) * 30.0, 2.0)) * (0.55 + 0.45 * sin(x * 130.0 + y * 90.0));
+  groundCol *= 1.0 - 0.2 * inTrail * scour;
   col = mix(col, groundCol, smoothstep(ground + 0.003, ground, y));
 
   // 小屋。窓に灯りがともる。
@@ -108,7 +115,11 @@ void main(){
   // いちばん手前の木。暗い影に、枝先だけ雪が白く乗る。
   xs = x + uShift * 0.08;
   vec2 big = trees(vec2(xs, y), 2.2, 5.0, 1.0, 0.36, 0.6);
-  col = mix(col, mix(uTop * 0.3, SNOW * 0.95, big.y * 0.8), big.x);
+  col = mix(col, mix(uTop * 0.3, SNOW * 0.95, big.y * 0.8 * (1.0 - inTrail * 0.92)), big.x);
+
+  // 渦の足もとに上がる雪煙。
+  float puffX = (x - uTrail.y) * 4.5;
+  col = mix(col, SNOW, uTrail.w * 0.6 * exp(-puffX * puffX) * exp(-max(y - ground, 0.0) * 7.0) * smoothstep(ground - 0.12, ground, y));
 
   col *= 1.0 - 0.28 * pow(length(vUv - 0.5) * 1.3, 2.0);
   gl_FragColor = vec4(col, 1.0);
@@ -121,6 +132,9 @@ uniform float uTime;
 uniform float uFall;
 uniform float uDrift;
 uniform float uSize;
+uniform float uAspect;
+uniform vec4 uGust;
+uniform float uPull;
 attribute vec4 aSeed;
 varying float vAlpha;
 void main(){
@@ -131,9 +145,17 @@ void main(){
   c.x = mod(c.x + ${(BOX.width / 2).toFixed(1)}, ${BOX.width.toFixed(1)}) - ${(BOX.width / 2).toFixed(1)};
   vec4 mv = modelViewMatrix * vec4(c, 1.0);
   gl_Position = projectionMatrix * mv;
+  // つむじ風。画面の上で、渦の中心に近い雪ほど大きく回す。回す角度は積み上げた値なので、逆回りには戻らない。
+  vec2 gd = vec2(gl_Position.x / gl_Position.w * uAspect, gl_Position.y / gl_Position.w) - uGust.xy;
+  float near = exp(-dot(gd, gd) * 4.5) * uGust.w;
+  float ang = uGust.z * near * (0.55 + aSeed.x * 0.9);
+  float cs = cos(ang);
+  float sn = sin(ang);
+  gd = mat2(cs, -sn, sn, cs) * gd * (1.0 - (0.3 + 0.35 * uPull) * near);
+  gl_Position.xy = vec2((gd.x + uGust.x) / uAspect, gd.y + uGust.y) * gl_Position.w;
   // 奥行きは透視投影に任せる。近い雪ほど大きく、画面の上では速く動く。
-  gl_PointSize = max(1.2, uSize * (0.55 + aSeed.w) / -mv.z);
-  vAlpha = mix(1.0, 0.5, smoothstep(3.0, 12.0, -mv.z));
+  gl_PointSize = max(1.2, uSize * (0.55 + aSeed.w) / -mv.z) * (1.0 + near * 0.9);
+  vAlpha = mix(1.0, 0.5, smoothstep(3.0, 12.0, -mv.z)) + near * 0.6;
 }
 `;
 
@@ -156,6 +178,7 @@ export function mount(container, options = {}) {
   const sceneUniforms = {
     uRes: { value: new THREE.Vector2(1, 1) },
     uShift: { value: 0 },
+    uTrail: { value: new THREE.Vector4(0, 0, 0, 0) },
     uTop: { value: new THREE.Color(p.skyTop) },
     uBottom: { value: new THREE.Color(p.skyBottom) },
   };
@@ -178,6 +201,9 @@ export function mount(container, options = {}) {
     uFall: { value: 0 },
     uDrift: { value: 0 },
     uSize: { value: 1 },
+    uAspect: { value: 1 },
+    uGust: { value: new THREE.Vector4(0, 0, 0, 0) },
+    uPull: { value: 0 },
     uOpacity: { value: stage.reduced ? 1 : 0 },
   };
   const snow = new THREE.Points(
@@ -190,6 +216,7 @@ export function mount(container, options = {}) {
   let gust = 0;
   stage.onResize(({ width, height, dpr }) => {
     sceneUniforms.uRes.value.set(width, height);
+    snowUniforms.uAspect.value = width / Math.max(1, height);
     snowUniforms.uSize.value = height * dpr * 0.05 * p.size;
   });
   stage.onFrame((time, dt) => {
@@ -201,19 +228,64 @@ export function mount(container, options = {}) {
     gust *= Math.exp(-dt * 1.4);
     snowUniforms.uOpacity.value = Math.min(1, snowUniforms.uOpacity.value + dt * 0.8);
     sceneUniforms.uShift.value = stage.pointer.sx;
+    stepVortex(dt);
   });
+
+  // つむじ風。準備: 雪を吸い寄せる。山場: 渦を巻きながら横へ進み、足もとに雪煙を上げる。余韻: 通り道の跡がゆっくり消える。
+  const vortex = { active: false, x: 0, y: 0, dir: 1, age: 0 };
+  const trail = sceneUniforms.uTrail.value;
+  function stepVortex(dt) {
+    if (!vortex.active) {
+      trail.z = Math.max(0, trail.z - dt * 0.14);
+      trail.w = Math.max(0, trail.w - dt * 1.5);
+      return;
+    }
+    const aspect = snowUniforms.uAspect.value;
+    vortex.age += dt;
+    const moving = Math.max(0, vortex.age - 0.45);
+    vortex.x += vortex.dir * dt * aspect * 0.5 * Math.min(1, moving * 1.5);
+    const outside = Math.abs(vortex.x) > aspect + 0.95;
+    const g = snowUniforms.uGust.value;
+    g.x = vortex.x;
+    g.y = vortex.y + Math.sin(vortex.age * 1.7) * 0.06;
+    g.z += dt * (2 + Math.min(1, vortex.age / 0.6) * 4.5);
+    g.w = Math.min(1, vortex.age / 0.35);
+    snowUniforms.uPull.value = Math.max(0, 1 - vortex.age / 0.7);
+    trail.y = vortex.x / 2;
+    trail.z = Math.min(1, trail.z + dt * 1.6);
+    trail.w = Math.min(1, vortex.age / 0.6) * (Math.abs(vortex.x) > aspect ? 0 : 1);
+    if (outside) {
+      vortex.active = false;
+      g.w = 0;
+      g.z = 0;
+    }
+  }
 
   function blow(event) {
     if (stage.reduced) return;
     const rect = container.getBoundingClientRect();
-    const side = rect.width ? (event.clientX - rect.left) / rect.width - 0.5 : 0;
-    // 押した側から反対側へ向かって吹く。
-    gust = side >= 0 ? -6 : 6;
+    if (!rect.width || !rect.height) return;
+    whirl((event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height);
   }
+  function whirl(nx, ny) {
+    if (stage.reduced) return;
+    // 押した側から反対側へ向かって流れる。弱い風も同じ向きに吹く。
+    vortex.dir = nx >= 0.5 ? -1 : 1;
+    gust = vortex.dir * 2.2;
+    vortex.x = (nx * 2 - 1) * snowUniforms.uAspect.value;
+    vortex.y = Math.max(-0.45, 1 - ny * 2);
+    vortex.age = 0;
+    vortex.active = true;
+    snowUniforms.uGust.value.set(vortex.x, vortex.y, 0, 0);
+    trail.set(vortex.x / 2, vortex.x / 2, 0, 0);
+  }
+  // 一覧では、数秒おきにつむじ風を見せる。
+  const auto = p.preview && !stage.reduced ? setInterval(() => whirl(Math.random() < 0.5 ? 0.25 : 0.75, 0.45), 7000) : 0;
   container.addEventListener('pointerdown', blow);
 
   return {
     destroy() {
+      clearInterval(auto);
       container.removeEventListener('pointerdown', blow);
       stage.destroy();
     },

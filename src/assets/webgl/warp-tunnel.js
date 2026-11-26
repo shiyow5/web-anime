@@ -9,7 +9,7 @@ export const meta = {
   category: 'webgl',
   libs: ['three', 'animejs'],
   description:
-    '星が奥から手前へ流れます。押している間は加速して、星が線に伸び、視野が広がります。離すとゆっくり元の速さに戻ります。ページ遷移や読み込み中の演出に使えます。',
+    '星が奥から手前へ流れます。押すと、いったん星が引き戻されて力をため、押した方向へ舵を切って機体を傾けながら一気に加速します。押している間は星が線に伸びて視野が広がり、離すと行き過ぎるほど減速してから元の速さに戻ります。ページ遷移や読み込み中の演出に使えます。',
   params: {
     count: { type: 'range', label: '星の数', min: 500, max: 12000, step: 500, default: 5000 },
     speed: { type: 'range', label: 'ふだんの速さ', min: 0.5, max: 12, step: 0.5, default: 3 },
@@ -87,7 +87,7 @@ export function mount(container, options = {}) {
   const p = resolveParams(meta.params, options);
   const stage = createStage(container, { fov: BASE_FOV, cameraZ: 0, background: p.background, preview: p.preview });
   const count = Math.round(p.preview ? Math.min(p.count, 2500) : p.count);
-  const state = { speed: p.speed, fov: BASE_FOV };
+  const state = { speed: p.speed, fov: BASE_FOV, yaw: 0, pitch: 0, roll: 0 };
 
   const shared = {
     uTravel: { value: 0 },
@@ -117,25 +117,81 @@ export function mount(container, options = {}) {
   });
   stage.onFrame((time, dt) => {
     shared.uTravel.value = (shared.uTravel.value + state.speed * dt) % DEPTH;
-    shared.uStretch.value = 0.25 + Math.max(0, state.speed - p.speed) * 0.09;
+    shared.uStretch.value = 0.25 + Math.max(0, Math.abs(state.speed) - p.speed) * 0.09;
     if (stage.camera.fov !== state.fov) {
       stage.camera.fov = state.fov;
       stage.camera.updateProjectionMatrix();
     }
-    stage.camera.rotation.set(stage.pointer.sy * 0.08, -stage.pointer.sx * 0.08, time * 0.02);
+    stage.camera.rotation.set(stage.pointer.sy * 0.08 + state.pitch, -stage.pointer.sx * 0.08 + state.yaw, time * 0.02 + state.roll);
   });
 
-  function setBoost(on) {
+  const CHARGE_MS = 220; // 星を引き戻して力をためる時間
+  const MIN_BOOST_MS = 950; // 軽くタップしただけでも、ここまでは加速を続ける
+  let boosting = false;
+  let startedAt = 0;
+  let releaseTimer = 0;
+
+  // 準備: 星が引き戻され、視野がせばまる。山場: 押した方向へ舵を切り、機体を傾けて加速する。
+  function engage(event) {
     if (stage.reduced) return;
+    clearTimeout(releaseTimer);
+    const rect = container.getBoundingClientRect();
+    const hasPoint = typeof event?.clientX === 'number' && rect.width > 0 && rect.height > 0;
+    const nx = hasPoint ? ((event.clientX - rect.left) / rect.width) * 2 - 1 : Math.random() * 1.2 - 0.6;
+    const ny = hasPoint ? 1 - ((event.clientY - rect.top) / rect.height) * 2 : Math.random() * 0.8 - 0.4;
+    boosting = true;
+    startedAt = performance.now();
+    utils.remove(state);
     animate(state, {
-      speed: on ? p.boost : p.speed,
-      fov: on ? BOOST_FOV : BASE_FOV,
-      duration: on ? 900 : 1800,
-      ease: on ? 'inQuad' : 'outExpo',
+      speed: [
+        { to: -p.speed * 2.2, duration: CHARGE_MS, ease: 'outQuad' },
+        { to: p.boost, duration: 780, ease: 'inQuad' },
+      ],
+      fov: [
+        { to: BASE_FOV - 12, duration: CHARGE_MS, ease: 'outQuad' },
+        { to: BOOST_FOV, duration: 780, ease: 'inQuad' },
+      ],
+    });
+    animate(state, { yaw: -nx * 0.3, pitch: ny * 0.22, duration: 900, delay: CHARGE_MS * 0.5, ease: 'outCubic' });
+    animate(state, {
+      roll: [
+        { to: -nx * 0.42, duration: 520, ease: 'outCubic' },
+        { to: -nx * 0.16, duration: 700, ease: 'inOutSine' },
+      ],
+      delay: CHARGE_MS,
     });
   }
-  const boostOn = () => setBoost(true);
-  const boostOff = () => setBoost(false);
+  // 余韻: 行き過ぎるほど減速してから、ゆれながら元の進路と速さに戻る。
+  function settle() {
+    if (!boosting) return;
+    boosting = false;
+    utils.remove(state);
+    animate(state, {
+      speed: [
+        { to: p.speed * 0.2, duration: 900, ease: 'outExpo' },
+        { to: p.speed, duration: 1100, ease: 'inOutSine' },
+      ],
+      fov: [
+        { to: BASE_FOV - 5, duration: 900, ease: 'outExpo' },
+        { to: BASE_FOV, duration: 1100, ease: 'inOutSine' },
+      ],
+    });
+    animate(state, { yaw: 0, pitch: 0, duration: 1900, ease: 'outElastic(1, .6)' });
+    animate(state, { roll: 0, duration: 2300, delay: 120, ease: 'outElastic(1, .45)' });
+  }
+  function release() {
+    if (!boosting) return;
+    clearTimeout(releaseTimer);
+    const wait = MIN_BOOST_MS - (performance.now() - startedAt);
+    if (wait > 0) releaseTimer = setTimeout(settle, wait);
+    else settle();
+  }
+  function setBoost(on) {
+    if (on) engage();
+    else release();
+  }
+  const boostOn = (event) => engage(event);
+  const boostOff = () => release();
   container.addEventListener('pointerdown', boostOn);
   window.addEventListener('pointerup', boostOff);
   container.addEventListener('pointerleave', boostOff);
@@ -155,6 +211,7 @@ export function mount(container, options = {}) {
     destroy() {
       clearInterval(pulse);
       clearTimeout(pulseOff);
+      clearTimeout(releaseTimer);
       container.removeEventListener('pointerdown', boostOn);
       window.removeEventListener('pointerup', boostOff);
       container.removeEventListener('pointerleave', boostOff);

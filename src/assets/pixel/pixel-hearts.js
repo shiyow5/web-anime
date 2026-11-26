@@ -8,7 +8,7 @@ export const meta = {
   category: 'pixel',
   libs: ['animejs'],
   description:
-    'クリックした場所から、ドット絵のハートと星が弾けて飛び、重さで落ちて床で跳ねます。触らなくても、ときどき自動で弾けます。「いいね」を押したときや、お祝いの演出に使えます。戻り値の burst() で、好きな位置から出せます。',
+    'クリックした場所から、ドット絵のハートと星が弾けます。半分は大きなハートの形に並んで広がり、いったん宙で止まってから、ばらけて落ちて床で跳ねます。続けて押すほど、ハートの形は大きくなります。触らなくても、ときどき自動で弾けます。「いいね」を押したときや、お祝いの演出に使えます。戻り値の burst() で、好きな位置から出せます。',
   params: {
     shapes: {
       type: 'select',
@@ -118,6 +118,8 @@ export function mount(container, options = {}) {
   const kinds = KINDS[p.shapes];
   let pieces = [];
   let rings = [];
+  let combo = 0;
+  let lastBurst = -10;
   let time = 0;
   let nextAuto = 0.5;
   let destroyed = false;
@@ -128,13 +130,20 @@ export function mount(container, options = {}) {
       const angle = Math.random() * Math.PI * 2;
       const power = utils.random(18, 62, 1);
       const kind = kinds[i % kinds.length];
+      // 偶数番目は、ハートの輪郭に沿った向きと速さで飛ばす。少しの間は重さを受けず、形が見える。
+      const shaped = i % 2 === 0;
+      const ht = (i / amount) * Math.PI * 2;
+      const hx = 16 * Math.sin(ht) ** 3;
+      const hy = -(13 * Math.cos(ht) - 5 * Math.cos(2 * ht) - 2 * Math.cos(3 * ht) - Math.cos(4 * ht));
+      const grow = 4.4 + combo * 0.9;
       pieces.push({
         rows: SPRITES[kind],
         palette: palettes[i % palettes.length],
         x: cx,
         y: cy,
-        vx: Math.cos(angle) * power,
-        vy: Math.sin(angle) * power - 45,
+        vx: shaped ? hx * grow : Math.cos(angle) * power,
+        vy: shaped ? hy * grow : Math.sin(angle) * power - 45,
+        calm: shaped ? 0.62 : 0,
         life: 0,
         max: utils.random(2.2, 3.8, 2),
         bounces: 0,
@@ -148,6 +157,9 @@ export function mount(container, options = {}) {
     const cx = Number.isFinite(x) ? x / view.scale : view.w * utils.random(0.2, 0.8, 2);
     const cy = Number.isFinite(y) ? y / view.scale : view.h * utils.random(0.25, 0.55, 2);
     if (reduced) return;
+    // 続けて押した回数。1.4 秒あくと元に戻る。
+    combo = time - lastBurst < 1.4 && Number.isFinite(x) ? Math.min(4, combo + 1) : 0;
+    if (Number.isFinite(x)) lastBurst = time;
     spawn(cx, cy);
     const ring = { x: cx, y: cy, r: 1, pop: 1, palette: palettes[rings.length % palettes.length] };
     rings.push(ring);
@@ -166,7 +178,9 @@ export function mount(container, options = {}) {
     const pull = 120 * p.gravity;
     pieces = pieces
       .map((piece) => {
-        const next = { ...piece, life: piece.life + dt, vy: piece.vy + pull * dt };
+        const calm = piece.life < piece.calm;
+        const slow = calm ? Math.exp(-4.5 * dt) : 1;
+        const next = { ...piece, life: piece.life + dt, vx: piece.vx * slow, vy: calm ? piece.vy * slow : piece.vy + pull * dt };
         next.x += next.vx * dt;
         next.y += next.vy * dt;
         const bottom = next.y + piece.rows.length;

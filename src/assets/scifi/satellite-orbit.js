@@ -10,7 +10,7 @@ export const meta = {
   category: 'scifi',
   libs: ['three', 'animejs'],
   description:
-    '緯線と経線だけで描いた惑星のまわりを、傾きの違う軌道に乗った衛星が、光の尾を引いて回ります。衛星には名前と高度の札が付き、惑星の裏に回ると隠れます。ポインターで視点が動き、クリックするとすべての衛星が一時的に加速します。',
+    '緯線と経線だけで描いた惑星のまわりを、傾きの違う軌道に乗った衛星が、光の尾を引いて回ります。衛星には名前と高度の札が付き、惑星の裏に回ると隠れます。ポインターで視点が動き、クリックすると軌道の引き上げが始まります。惑星が脈打ち、衛星は内側の軌道から順に、いったん減速して軌道を縮めてから噴射で一気に加速し、軌道をひと回り大きく押し広げたあと、揺れ戻りながら元の高度と速さに落ち着きます。',
   params: {
     planet: { type: 'color', label: '惑星の線の色', default: '#e8935a' },
     trail: { type: 'color', label: '衛星の色', default: '#6fe3ff' },
@@ -130,7 +130,7 @@ export function mount(container, options = {}) {
   const planetColor = new THREE.Color(p.planet);
   const trailColor = new THREE.Color(p.trail);
   const count = Math.round(p.satellites);
-  const state = { boost: 0, planet: stage.reduced ? 1 : 0 };
+  const state = { boost: 0, planet: stage.reduced ? 1 : 0, pulse: 0 };
   const additive = { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending };
 
   // 惑星。背景色の球で裏側の線と衛星を隠し、線の球と縁の光を重ねる。
@@ -187,7 +187,7 @@ export function mount(container, options = {}) {
       tag = h('div', { class: 'ua-so__tag', style: { color: `#${color.getHexString()}` }, text: p.preview ? name : `${name}\n${spec.altitude.toLocaleString('en-US')} km` });
       tags.appendChild(tag);
     }
-    return { spec, group, ring, rotor, craft, tag, angle: index * 2.1 + 0.6, draw: stage.reduced ? 1 : 0 };
+    return { spec, group, ring, rotor, craft, tag, angle: index * 2.1 + 0.6, draw: stage.reduced ? 1 : 0, burn: 0, raise: 0 };
   });
 
   const starCount = p.preview ? 260 : 700;
@@ -219,13 +219,14 @@ export function mount(container, options = {}) {
     root.scale.setScalar(fit);
     root.rotation.set(0.38 - pointer.sy * 0.5, pointer.sx * 0.8 + time * 0.04, 0);
     globe.rotation.y += dt * 0.12;
-    globe.scale.setScalar(0.6 + state.planet * 0.4);
+    globe.scale.setScalar(0.6 + state.planet * 0.4 + state.pulse * 0.12);
     lines.material.opacity = 0.6 * state.planet;
     scale.rotation.y -= dt * 0.05;
     stars.rotation.y = pointer.sx * 0.04;
 
     for (const orbit of orbits) {
-      orbit.angle += dt * orbit.spec.rate * 0.5 * p.speed * (1 + state.boost);
+      orbit.angle += dt * orbit.spec.rate * 0.5 * p.speed * (1 + state.boost + orbit.burn);
+      orbit.group.scale.setScalar(1 + orbit.raise);
       orbit.rotor.rotation.y = -orbit.angle;
       orbit.rotor.visible = orbit.draw > 0.97;
       orbit.ring.geometry.setDrawRange(0, Math.ceil(orbit.draw * (SEGMENTS + 1)));
@@ -254,8 +255,17 @@ export function mount(container, options = {}) {
 
   function boost() {
     if (stage.reduced) return;
-    animate(state, { boost: [5, 0], duration: 2200, ease: 'outExpo' });
+    animate(state, { pulse: [{ to: 1, duration: 140, ease: 'outQuad' }, { to: 0, duration: 1200, ease: 'outElastic(1, .4)' }] });
+    // 内側の軌道から順に、減速して縮む → 噴射で加速して広がる → 揺れ戻って落ち着く。
+    orbits.forEach((orbit, index) => {
+      animate(orbit, {
+        burn: [{ to: -0.85, duration: 220, ease: 'outQuad' }, { to: 7, duration: 260, ease: 'outQuad' }, { to: 0, duration: 2000, ease: 'outExpo' }],
+        raise: [{ to: -0.07, duration: 220, ease: 'outQuad' }, { to: 0.2, duration: 520, ease: 'outQuart' }, { to: 0, duration: 1700, ease: 'outElastic(1, .45)' }],
+        delay: index * 150,
+      });
+    });
   }
+  const auto = p.preview && !stage.reduced ? setInterval(boost, 5200) : 0;
   if (!stage.reduced) {
     animate(state, { planet: [0, 1], duration: 1400, ease: 'outExpo' });
     animate(orbits, { draw: [0, 1], duration: 1300, ease: 'inOutQuart', delay: stagger(170, { start: 300 }) });
@@ -265,6 +275,7 @@ export function mount(container, options = {}) {
   return {
     boost,
     destroy() {
+      clearInterval(auto);
       container.removeEventListener('click', boost);
       utils.remove([state, ...orbits]);
       tags.remove();

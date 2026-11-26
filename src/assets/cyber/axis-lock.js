@@ -11,7 +11,7 @@ export const meta = {
   category: 'cyber',
   libs: ['three', 'animejs'],
   description:
-    '球の核を、軸がすべて違う 4 本の輪が囲みます。記号の並んだ輪が 1 本ずつ刻みながら回り、印の位置で止まると光って固定されます。4 本がそろうと輪が同じ面に倒れ込み、核が上下に割れて開きます。クリックするとやり直します。認証や解錠の演出に使えます。',
+    '球の核を、軸がすべて違う 4 本の輪が囲みます。記号の並んだ輪が 1 本ずつ刻みながら回り、印の位置で止まると光って固定されます。4 本がそろうと輪が同じ面に倒れ込み、核が上下に割れて開きます。タップすると錠が掛け直されます。全体がタップした側へ振れて揺れ、核が閉じ、固定されていた輪が最後のものから順に外れて逆向きに空回りします。映像が乱れたあと、4 本の輪の軸が隣どうしで入れ替わり、新しい組み合わせで合わせ直しが始まります。認証や解錠の演出に使えます。',
   params: {
     base: { type: 'color', label: '輪の色 A', default: '#35e8ff' },
     second: { type: 'color', label: '輪の色 B', default: '#b65cff' },
@@ -167,7 +167,7 @@ export function mount(container, options = {}) {
   });
   hud.add(new THREE.Mesh(strokes([[-0.95, -2.92, -0.68, -2.92], [0.68, -2.92, 0.95, -2.92]], 0.01), glow(p.base, 0.5)));
 
-  const scene = { open: 0, align: 0, wave: 1, burst: 0 };
+  const scene = { open: 0, align: 0, wave: 1, burst: 0, shake: 0, kickX: 0, kickY: 0 };
   const waits = new Set();
   const baseBloom = stage.bloomPass?.strength ?? 0;
   let spinClock = 0;
@@ -231,20 +231,62 @@ export function mount(container, options = {}) {
     wait(1500 / p.speed, () => seek(0));
   }
 
-  // 閉じて、輪をばらばらの向きへ戻し、最初からやり直す。
-  function restart() {
+  // 掛け直し。全体が振れて核が閉じ、輪が最後のものから順に外れて空回りする（準備）→ 映像が乱れ、
+  // 輪の軸が隣どうしで入れ替わる（山場）→ ふらつきが戻り、新しい組み合わせで合わせ直す（余韻）。
+  const swaps = rings.map(() => ({ k: 1 }));
+  function restart(event) {
     if (stage.reduced) return;
     cancel();
-    noise.burst(0.8);
-    for (const ring of rings) {
-      ring.state.mode = 'free';
-      ring.state.e = 1;
-      animate(ring.state, { lit: 0, flash: 0, duration: 400, ease: 'outQuad' });
-      animate(ring.state, { wobble: 1, duration: 900, ease: 'outQuad' });
-    }
-    animate(scene, { open: 0, align: 0, burst: 0, duration: 800, ease: 'inOutQuart' });
+    utils.remove(swaps);
+    const rect = container.getBoundingClientRect();
+    const nx = event?.clientX === undefined ? 0.6 : ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    const ny = event?.clientY === undefined ? 0 : ((event.clientY - rect.top) / rect.height) * 2 - 1;
+    const last = rings.length - 1;
+    const tilts = rings.map((ring) => ring.baseTilt.clone());
+    rings.forEach((ring, i) => {
+      const { state } = ring;
+      const delay = (last - i) * 120;
+      state.mode = 'locked';
+      state.e = 1;
+      animate(state, { lit: 0, duration: 260, delay, ease: 'outQuad' });
+      animate(state, { flash: [{ to: 1, duration: 60, delay }, { to: 0, duration: 600 }] });
+      animate(state, { wobble: 1, duration: 1100, delay, ease: 'outElastic(1, .5)' });
+      // 外れた輪は、回っていた向きと逆へ空回りしてから、自由に回りはじめる。
+      animate(state, {
+        angle: state.angle - Math.sign(ring.spec.speed || 1) * (2.2 + i * 0.7),
+        duration: 900,
+        delay,
+        ease: 'outCubic',
+        onComplete() {
+          state.mode = 'free';
+        },
+      });
+      // 軸の入れ替え。隣の輪が持っていた傾きへ移る。
+      const from = tilts[i];
+      const to = tilts[(i + 1) % rings.length];
+      swaps[i].k = 0;
+      animate(swaps[i], {
+        k: 1,
+        duration: 950,
+        delay: 480 + i * 90,
+        ease: 'inOutQuart',
+        onUpdate() {
+          ring.baseTilt.copy(from).slerp(to, swaps[i].k);
+        },
+        onComplete() {
+          ring.baseTilt.copy(to);
+        },
+      });
+    });
+    animate(scene, { open: 0, align: 0, burst: 0, duration: 520, ease: 'inOutQuart' });
+    animate(scene, { shake: [1, 0], duration: 620, ease: 'outQuad' });
+    animate(scene, {
+      kickX: [{ to: ny * 0.4, duration: 200, ease: 'outQuad' }, { to: 0, duration: 1400, ease: 'outElastic(1, .5)' }],
+      kickY: [{ to: nx * 0.6, duration: 200, ease: 'outQuad' }, { to: 0, duration: 1400, ease: 'outElastic(1, .5)' }],
+    });
     scene.wave = 1;
-    start();
+    wait(420, () => noise.burst(0.9));
+    wait(1500, start);
   }
 
   stage.onResize(() => {
@@ -293,8 +335,9 @@ export function mount(container, options = {}) {
     wave.material.opacity = scene.wave < 1 ? (1 - scene.wave) * 0.9 : 0;
     if (stage.bloomPass) stage.bloomPass.strength = baseBloom + scene.burst * 0.2;
 
-    lock.rotation.x = (0.12 + Math.sin(time * 0.27) * 0.24 - stage.pointer.sy * 0.4) * loose;
-    lock.rotation.y = (Math.sin(time * 0.33) * 0.6 + stage.pointer.sx * 0.5) * loose;
+    lock.rotation.x = (0.12 + Math.sin(time * 0.27) * 0.24 - stage.pointer.sy * 0.4) * loose + scene.kickX;
+    lock.rotation.y = (Math.sin(time * 0.33) * 0.6 + stage.pointer.sx * 0.5) * loose + scene.kickY;
+    lock.position.x = Math.sin(time * 46) * scene.shake * 0.09;
   });
 
   container.addEventListener('pointerdown', restart);
@@ -316,6 +359,7 @@ export function mount(container, options = {}) {
     destroy() {
       container.removeEventListener('pointerdown', restart);
       cancel();
+      utils.remove(swaps);
       stage.destroy();
     },
   };

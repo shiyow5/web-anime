@@ -1,4 +1,4 @@
-import { animate, createTimer, stagger, steps } from 'animejs';
+import { animate, createTimer, stagger, steps, utils } from 'animejs';
 import { createDisposer, createRoot, h, injectStyle, localPointer, prefersReducedMotion, removeRoot } from '../../lib/dom.js';
 import { resolveParams } from '../../lib/params.js';
 
@@ -8,7 +8,7 @@ export const meta = {
   category: 'cyber',
   libs: ['animejs'],
   description:
-    'オシロスコープの画面を、光の点が左から右へ走って 2 本の波形を描き、通ったあとに残像が残ります。ポインターを左右に動かすと周波数が、上下に動かすと振れ幅が変わり、画面の数値も追従します。クリックすると波形の種類が切り替わります。',
+    'オシロスコープの画面を、光の点が左から右へ走って 2 本の波形を描き、通ったあとに残像が残ります。ポインターを左右に動かすと周波数が、上下に動かすと振れ幅が変わり、画面の数値も追従します。タップすると単発の取り込みが始まります。光の点が一瞬止まり、タップした位置に測定の線が立って衝撃の波が走り、掃引が速まるあいだに波形が次の種類へ少しずつ形を変え、線の読み値が出てから通常の掃引に戻ります。',
   params: {
     trace: { type: 'color', label: '波形 1 の色', default: '#ffd23f' },
     trace2: { type: 'color', label: '波形 2 の色', default: '#ff5f7e' },
@@ -54,11 +54,16 @@ const CSS = `
 .ua-ss__leds i:first-child{background:var(--ua-trace)}
 .ua-ss__track{position:relative;flex:1;height:2px;background:color-mix(in srgb,var(--ua-trace) 25%,transparent)}
 .ua-ss__track::before{content:"";position:absolute;inset:-.9cqh 0;background:repeating-linear-gradient(90deg,color-mix(in srgb,var(--ua-trace) 45%,transparent) 0 1px,transparent 1px 5%)}
+.ua-ss__cursor{position:absolute;top:0;bottom:0;left:0;width:0;border-left:1px dashed #fff;opacity:0;pointer-events:none}
+.ua-ss__cursor span{position:absolute;top:44%;left:.8cqw;padding:.15em .5em;font-size:max(8px,1.3cqw);letter-spacing:.06em;white-space:nowrap;color:var(--ua-bg);background:var(--ua-trace)}
+.ua-ss__cursor--flip span{left:auto;right:.8cqw}
 .ua-ss__knob{position:absolute;top:50%;left:0;width:.5cqw;min-width:3px;height:3.4cqh;margin-top:-1.7cqh;background:var(--ua-trace);box-shadow:0 0 1cqw var(--ua-trace)}
 `;
 
 const SHAPES = ['sine', 'square', 'saw', 'pulse'];
 const TAU = Math.PI * 2;
+const TRIG_AUTO = 'TRIG AUTO ▲ DC';
+const TRIG_SINGLE = 'TRIG SINGLE ▲ DC';
 
 // 位相（ラジアン）から、-1〜1 の波の高さを返す。
 export function waveAt(shape, phase) {
@@ -87,13 +92,16 @@ export function mount(container, options = {}) {
   const periodText = h('span', { text: 'T 5.00 ms' });
   const vppText = h('span', { text: 'Vpp 2.40 V' });
   const shapeText = h('span', { text: '' });
+  const trigText = h('div', { text: TRIG_AUTO });
   const reads = [
     h('div', { class: 'ua-ss__read ua-ss__read--tl' }, h('div', { text: 'CH1  500mV/div' }), h('div', { class: 'ua-ss__ch2', text: 'CH2  200mV/div' })),
     h('div', { class: 'ua-ss__read ua-ss__read--tr' }, h('div', {}, freqText, h('span', { text: ' Hz' })), h('div', {}, periodText)),
     h('div', { class: 'ua-ss__read ua-ss__read--bl' }, h('div', { text: 'TIME 2.00ms/div' }), h('div', {}, shapeText)),
-    h('div', { class: 'ua-ss__read ua-ss__read--br' }, h('div', {}, vppText), h('div', { text: 'TRIG AUTO ▲ DC' })),
+    h('div', { class: 'ua-ss__read ua-ss__read--br' }, h('div', {}, vppText), trigText),
   ];
-  const screen = h('div', { class: 'ua-ss__screen' }, gridCanvas, traceCanvas, dots, reads);
+  const cursorText = h('span', { text: '' });
+  const cursor = h('div', { class: 'ua-ss__cursor' }, cursorText);
+  const screen = h('div', { class: 'ua-ss__screen' }, gridCanvas, traceCanvas, dots, cursor, reads);
   const knob = h('i', { class: 'ua-ss__knob' });
   const leds = [h('i'), h('i'), h('i')];
   const panel = h('div', { class: 'ua-ss__panel' }, h('div', { class: 'ua-ss__leds' }, leds), h('span', { text: 'S-2 · 2CH' }), h('span', { text: 'FREQ' }), h('div', { class: 'ua-ss__track' }, knob), h('span', { text: 'RUN' }));
@@ -108,8 +116,15 @@ export function mount(container, options = {}) {
   const view = { mult: 1, amp: 0.7, targetMult: 1, targetAmp: 0.7 };
   const beam = { u: 0, phase: 0, time: 0, y1: null, y2: null };
 
+  // 単発の取り込みで使う値。blend は前の波形から今の波形への混ざり具合、rush は掃引の速さの倍率、
+  // shock はタップした位置に立つ衝撃の波の強さ。
+  let fromShape = shape;
+  const capture = { blend: 1, rush: 1, shock: 0, at: 0.5 };
   const levels = (phase, time) => {
-    const y1 = waveAt(shape, phase) * view.amp + 0.05 * Math.sin(phase * 3 + time * 2);
+    const wave = capture.blend >= 1 ? waveAt(shape, phase) : waveAt(fromShape, phase) * (1 - capture.blend) + waveAt(shape, phase) * capture.blend;
+    const near = beam.u - capture.at;
+    const ring = capture.shock * Math.exp(-(near * near) / 0.006) * Math.sin(near * 90 - time * 30);
+    const y1 = wave * view.amp + 0.05 * Math.sin(phase * 3 + time * 2) + ring * 0.9;
     const y2 = Math.sin(phase * 0.5 + 1) * Math.cos(phase * 3.5 - time) * 0.75;
     return [height * (0.43 - y1 * 0.27), height * (0.8 - y2 * 0.1)];
   };
@@ -239,11 +254,51 @@ export function mount(container, options = {}) {
     shapeText.textContent = `WAVE ${shape.toUpperCase()}`;
   };
 
-  function nextShape() {
+  // 単発の取り込み。光の点が止まり、測定の線が立つ（準備）→ 衝撃の波が走り、速い掃引のなかで波形が次の種類へ変わる（山場）
+  // → 読み値が出て、線が消え、通常の掃引へ戻る（余韻）。
+  function nextShape(event) {
+    fromShape = shape;
     shape = SHAPES[(SHAPES.indexOf(shape) + 1) % SHAPES.length];
     showShape();
     if (reduced) return drawStill();
-    animate(shapeText, { opacity: [0, 1], duration: 360, ease: steps(3) });
+    const at = event?.clientX === undefined ? 0.3 + Math.random() * 0.4 : Math.min(0.96, Math.max(0.04, localPointer(event, screen).x));
+    utils.remove([capture, cursor, trigText, shapeText]);
+    Object.assign(capture, { blend: 0, at });
+    cursor.style.left = `${(at * 100).toFixed(1)}%`;
+    cursor.classList.toggle('ua-ss__cursor--flip', at > 0.7);
+    cursorText.textContent = `t ${(at * 20).toFixed(2)} ms`;
+    trigText.textContent = TRIG_SINGLE;
+    animate(capture, {
+      rush: [
+        { to: 0.04, duration: 180, ease: 'outQuad' },
+        { to: 3.2, duration: 380, ease: 'inQuad' },
+        { to: 1, duration: 1100, ease: 'outExpo' },
+      ],
+    });
+    animate(capture, {
+      shock: [
+        { to: 1, duration: 140, ease: 'outQuad' },
+        { to: 0, duration: 1500, ease: 'outQuad' },
+      ],
+    });
+    animate(capture, { blend: 1, duration: 1100, delay: 240, ease: 'inOutQuad' });
+    animate(cursor, {
+      opacity: [
+        { to: 0.9, duration: 120 },
+        { to: 0.9, duration: 1500 },
+        { to: 0, duration: 400 },
+      ],
+      scaleY: [{ from: 0, to: 1, duration: 260, ease: 'outExpo' }],
+      onComplete() {
+        trigText.textContent = TRIG_AUTO;
+      },
+    });
+    animate(trigText, { opacity: [0.2, 1], duration: 240, ease: steps(2), loop: 3 });
+    animate(shapeText, { opacity: [0, 1], duration: 360, delay: 700, ease: steps(3) });
+    disposer.timeout(() => {
+      const volts = waveAt(shape, TAU * p.cycles * view.mult * at) * view.amp * 2;
+      cursorText.textContent = `t ${(at * 20).toFixed(2)} ms  ${volts >= 0 ? '+' : ''}${volts.toFixed(2)} V`;
+    }, 900);
   }
 
   showShape();
@@ -294,7 +349,7 @@ export function mount(container, options = {}) {
       ctx.globalAlpha = 1 - Math.exp(-dt / p.persistence);
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, width, height);
-      advance(dt * 0.62);
+      advance(dt * 0.62 * capture.rush);
       ctx.globalAlpha = 1;
       ctx.globalCompositeOperation = 'source-over';
 
@@ -307,10 +362,13 @@ export function mount(container, options = {}) {
   });
   disposer.add(() => timer.pause());
 
+  if (p.preview) disposer.interval(() => nextShape(), 4600);
+
   return {
     nextShape,
     destroy() {
       disposer.run();
+      utils.remove([capture, cursor, trigText, shapeText]);
       removeRoot(root);
     },
   };

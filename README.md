@@ -95,7 +95,7 @@ npm run dev
 | `tesseract` | 四次元立方体 | three.js + anime.js | 研究や数学の題材 |
 | `satellite-orbit` | 衛星の軌道 | three.js + anime.js | 通信や位置情報のサービス |
 | `radar-sweep` | 探知レーダー | anime.js | 監視や検索の画面 |
-| `neon-horizon` | ネオンの地平線 | three.js | 音楽やゲームのサイト |
+| `neon-horizon` | ネオンの地平線 | three.js + anime.js | 音楽やゲームのサイト |
 | `hud-interface` | 宇宙船の計器盤 | anime.js | 数値や状態を見せる画面 |
 | `glitch-text` | 乱れる文字 | anime.js | ゲームや音楽の見出し |
 
@@ -270,82 +270,74 @@ fx.destroy();
 
 範囲の外の数値や、色として読めない文字列を渡した場合は、その項目だけ既定値に戻します。
 
+### 触ったときの動き
+
+タップやクリックの反応は、題材ごとに作ってあります。時計なら針や数字が早回しされて今の時刻へ戻り、池なら餌をまいた場所へ鯉が集まり、端末なら割り込みのコマンドが打ち込まれます。どの素材も、準備、山場、余韻の3段で動き、多くはタップした位置を起点にします。何が起きるかは、個別ページの説明文と、各素材ファイルの `meta.description` に書きました。
+
+OSで動きを減らす設定を選んでいる人には、これらの動きを出しません。
+
 ### 素材ごとの追加機能
 
-`mount` の戻り値に、`destroy` 以外の関数を持つ素材があります。
+`mount` の戻り値には、`destroy` のほかに、タップと同じ仕掛けを外から呼ぶための関数を持つ素材があります。ボタンを押したときや、通信が終わったときなど、自分のサイトのきっかけに合わせて呼べます。
 
-| 素材 | 関数 | すること |
-|---|---|---|
-| `page-curtain` | `go('curve' \| 'stripes' \| 'circle')` | 幕を出して次のページへ切り替える |
-| `image-ripple` | `next()` | 次の画像へ切り替える |
-| `scramble-text` | `next()` | 次の文へ置き換える |
-| `stagger-grid` | `ripple(番号)` | 指定した点から波を起こす |
-| `floating-shapes` | `burst()` | 立体を外へ弾けさせる |
-| `warp-tunnel` | `boost(true \| false)` | 加速と減速を切り替える |
-| `line-draw` | `replay()` | 最初から描き直す |
-| `confetti-burst` | `burst(x, y)` | 指定した位置から紙吹雪を出す |
-| `magic-circle` | `cast()` | 魔法陣を発動させる |
-| `holo-globe` | `reboot()` | 映像を乱して走査し直す |
-| `black-hole` | `flare()` | 円盤を明るく燃え上がらせる |
-| `crystal-gem` | `chime()` | 結晶を震わせて粒を弾けさせる |
-| `portal-vortex` | `reopen()` | 門を閉じて開き直す |
-| `glitch-text` | `burst()` | 文字を乱れさせる |
-| `arcane-gyro` | `cast()` | 魔法陣を発動させる |
-| `exploded-core` | `toggle()` | 装置を分解し、もう一度呼ぶと組み立てる |
-| `hex-shield` | `impact(x, y, z)` | 指定した向きに衝撃の波紋を起こす |
-| `tesseract` | `spin()` | 回転を勢いづける |
-| `satellite-orbit` | `boost()` | 衛星の公転を一時的に速める |
-| `terminal-boot` | `restart()` | 起動の表示を最初からやり直す |
-| `circuit-pulse` | `surge()` | 回路全体に光を一斉に走らせる |
-| `glyph-rain` | `scramble()` | 降っている記号を入れ替える |
-| `biometric-scan` | `rescan()` | 走査をやり直す |
-| `signal-scope` / `fourier-draw` | `nextShape()` | 次の波形や図形へ切り替える |
-| `depth-type` | `unravel()` | 文字の重なりを奥へほどいて戻す |
-| `text-highlight` / `number-counter` | `replay()` | 最初から再生し直す |
-| `toast-stack` | `push(種類, 文)` | 通知を 1 件積む |
-| `card-swipe` | `next(向き)` | いちばん上のカードをめくる（負の数で左へ） |
-| `skeleton-shimmer` | `reload()` | 骨組みの表示に戻して読み込み直す |
-| `image-reveal` | `go(種類, 中心)` | 次の絵へ切り替える |
-| `pixel-dissolve` | `go(番号)` | 指定した絵へ切り替える（省くと次の絵） |
-| `pixel-fireworks` | `launch(x, y)` | 指定した位置へ花火を打ち上げる |
-| `pixel-hearts` | `burst(x, y)` | 指定した位置からハートを出す |
-| `pixel-starfield` / `star-twinkle` | `shoot(x, y)` | 流れ星を流す |
-| `pixel-sprite-run` | `jump()` | ロボットを跳ねさせる |
-| `pixel-campfire` | `crackle()` | 火の粉をはぜさせる |
-| `pixel-night-city` | `flash()` | 街に稲光を走らせる |
-| `pixel-loader` | `pulse()` | ローダーを一度強く光らせる |
-| `growing-tree` | `nextSeason()` | 次の季節へ進める |
-| `flower-bloom` | `rebloom()` | 花を閉じて咲き直させる |
-| `lightning-storm` | `strike(x, y)` | 指定した位置に雷を落とす |
-| `ocean-waves` | `swell()` | 大きなうねりを起こす |
-| `bubble-float` / `balloon-rise` | `pop()` | 見えている 1 つを割る |
-| `heart-burst` | `press()` | ボタンを押したときの演出を出す |
-| `jelly-buttons` | `poke(番号)` | 指定したボタンを揺らす |
-| `sticker-pop` | `stickAll()` | シールを全部貼り直す |
-| `cotton-clouds` / `rainbow-ribbon` | `puff()` | ふくらませて弾ませる |
-| `lorenz-attractor` | `relaunch()` | 軌跡を消して描き直す |
-| `pendulum-wave` | `realign()` | 振り子をそろえた位置からやり直す |
-| `solar-system` | `fastForward()` | 公転を一時的に早送りする |
-| `holo-chronograph` | `pulse()` | 層を大きく開いて戻し、映像を乱す |
-| `sigil-dome` | `cast()` | 魔法陣を発動させ、段を大きく開く |
-| `rune-sphere` | `align()` | 輪を 1 枚の平面にそろえてから弾けさせる |
-| `armillary-clock` | `spin()` | 3 本の輪を 1 回転させて戻す |
-| `clockwork-movement` / `carousel-music-box` | `wind()` | ぜんまいを巻いて一時的に速める |
-| `gear-reactor` / `planet-rings` | `surge()` | 回転を一時的に速める |
-| `gear-orrery` | `flare()` | 中心の光を強める |
-| `gear-loader` | `setProgress(n)` | 進み具合を 0〜100 で渡す（呼ぶと自動の進行は止まる） |
-| `bevel-cube` | `reverse()` | 回転の向きを反転させる |
-| `gyro-stabilizer` | `impact(強さ)` | 衝撃を与えて輪を振れさせる |
-| `holo-reactor` | `overload()` | 過負荷の演出を出す |
-| `target-reticle` | `lock()` / `release()` | 対象を捕捉する、解放する |
-| `data-sphere` / `glitch-dial` | `glitch()` | 映像を乱す |
-| `glitch-dial` | `setValue(番号, 値)` / `auto()` | 計器に 0〜1 の値を渡す、自動の値に戻す |
-| `ring-gate` | `activate()` | 輪をそろえて門を開く |
-| `axis-lock` | `reset()` | 錠をかけ直す |
-| `astrolabe` | `turn()` | 星図の輪を勢いよく回す |
-| `orbit-rings` | `pulse()` | 一瞬速く回してふくらませる |
-| `ascii-gyro` | `kick()` | 輪に勢いを与える |
-| `pixel-gyro-cube` | `spin()` | 立方体を勢いよく回す |
+```js
+const clock = mount(el);
+clock.pulse(); // 時刻合わせの早回しを始める
+```
+
+| 素材 | 関数 | 素材 | 関数 |
+|---|---|---|---|
+| `ascii-clock` | `windUp()` | `pixel-fireworks` | `launch()` |
+| `ascii-fire` | `stoke()` | `pixel-gyro-cube` | `spin()` |
+| `ascii-gyro` | `kick()` | `pixel-hearts` | `burst()` |
+| `ascii-plasma` | `rewrite()` | `pixel-loader` | `pulse()` |
+| `armillary-clock` | `spin()` | `pixel-night-city` | `flash()` |
+| `clockwork-movement` | `wind()` | `pixel-sprite-run` | `jump()` |
+| `holo-chronograph` | `pulse()` | `pixel-starfield` | `shoot()` |
+| `axis-lock` | `reset()` | `astrolabe` | `turn()` |
+| `biometric-scan` | `rescan()` | `atom-orbitals` | `excite()` |
+| `circuit-pulse` | `surge()` | `dna-helix` | `unzip()` |
+| `data-corridor` | `pulseWave()` | `fourier-draw` | `nextShape()` |
+| `data-sphere` | `glitch()` `resync()` | `lorenz-attractor` | `relaunch()` |
+| `exploded-core` | `toggle()` `inspect()` | `pendulum-wave` | `realign()` |
+| `gear-reactor` | `surge()` | `solar-system` | `fastForward()` |
+| `glitch-dial` | `glitch()` `setValue()` `auto()` `calibrate()` | `wave-interference` | `drop()` |
+| `glyph-rain` | `scramble()` | `bevel-cube` | `reverse()` |
+| `holo-reactor` | `overload()` | `black-hole` | `flare()` |
+| `iso-stack` | `pullOut()` | `glitch-text` | `burst()` `scramble()` |
+| `neon-city` | `blackout()` | `gyro-stabilizer` | `impact()` |
+| `signal-scope` | `nextShape()` | `hex-shield` | `impact()` |
+| `terminal-boot` | `restart()` `interrupt()` | `holo-globe` | `reboot()` |
+| `balloon-rise` | `pop()` | `neon-horizon` | `boost()` |
+| `bubble-float` | `pop()` | `ring-gate` | `activate()` |
+| `carousel-music-box` | `wind()` | `satellite-orbit` | `boost()` |
+| `cotton-clouds` | `puff()` | `target-reticle` | `lock()` `release()` |
+| `heart-burst` | `press()` | `tesseract` | `spin()` |
+| `jelly-buttons` | `poke()` | `parallax-hero` | `echo()` |
+| `rainbow-ribbon` | `puff()` | `blob-morph` | `merge()` |
+| `star-twinkle` | `shoot()` | `line-draw` | `replay()` `orbit()` |
+| `sticker-pop` | `stickAll()` | `depth-type` | `unravel()` |
+| `arcane-gyro` | `cast()` | `kinetic-headline` | `scatter()` |
+| `crystal-gem` | `chime()` | `marquee-velocity` | `flick()` |
+| `firefly-forest` | `startle()` | `scramble-text` | `next()` `decode()` |
+| `gear-orrery` | `flare()` | `text-highlight` | `replay()` `mark()` |
+| `magic-circle` | `cast()` | `image-reveal` | `go()` |
+| `portal-vortex` | `reopen()` | `page-curtain` | `go()` |
+| `rune-sphere` | `align()` | `card-swipe` | `next()` |
+| `sigil-dome` | `cast()` | `confetti-burst` | `burst()` |
+| `loader-set` | `complete()` | `gear-loader` | `setProgress()` |
+| `orbit-rings` | `pulse()` | `number-counter` | `replay()` |
+| `skeleton-shimmer` | `reload()` | `stagger-grid` | `ripple()` |
+| `flower-bloom` | `rebloom()` | `toast-stack` | `push()` |
+| `growing-tree` | `nextSeason()` | `aurora-gradient` | `drop()` |
+| `lightning-storm` | `strike()` | `floating-shapes` | `burst()` |
+| `ocean-waves` | `swell()` | `image-ripple` | `next()` |
+| `planet-rings` | `surge()` | `particle-galaxy` | `supernova()` |
+| `sakura-fall` | `gust()` | `warp-tunnel` | `boost()` |
+| `pixel-campfire` | `crackle()` | `wave-terrain` | `drop()` |
+| `pixel-dissolve` | `go()` |  |  |
+
+引数を取るものもあります。`gear-loader` の `setProgress(n)` は進み具合を 0〜100 で、`glitch-dial` の `setValue(番号, 値)` は計器の値を 0〜1 で、`toast-stack` の `push(種類, 文)` は通知の内容を受け取ります。位置を受け取る関数（`strike(x, y)` や `launch(x, y)` など）は、省くと適当な場所で起きます。
 
 `image-ripple` は、設定に `images` として画像のURLを2枚以上渡すと、見本のポスターの代わりにその画像を表示します。
 

@@ -10,7 +10,7 @@ export const meta = {
   category: 'fantasy',
   libs: ['three', 'animejs'],
   description:
-    '文字を刻んだ輪が、高さを変えて天蓋のように積み上がります。段ごとに逆向きに回り、縁には小さな魔法陣が外を向いて立ち、それぞれ自分の軸で回ります。骨組みの弧と、傾いた大きな輪が全体を包み、頂から光の柱が立ち、光の筋が斜めに貫きます。クリックすると発動して、段が大きく開きます。',
+    '文字を刻んだ輪が、高さを変えて天蓋のように積み上がります。段ごとに逆向きに回り、縁には小さな魔法陣が外を向いて浮かび、それぞれ自分の軸で回ります。骨組みの弧と、傾いた大きな輪が全体を包み、頂から光の柱が立ち、光の筋が斜めに貫きます。クリックすると発動します。段が下から順に勢いよく回り、縁の魔法陣が浮き上がって隣の位置へ巡り、大きな輪が頂の上に水平にそろって光の柱が強まります。',
   params: {
     color: { type: 'color', label: '線の色', default: '#a9d4ff' },
     light: { type: 'color', label: '光の色', default: '#f2fbff' },
@@ -122,33 +122,30 @@ export function mount(container, options = {}) {
       group.add(wall);
     }
     root.add(group);
-    return { tier, group, rise: still ? 1 : 0 };
+    return { tier, group, rise: still ? 1 : 0, twist: 0 };
   }
   const tiers = TIERS.map(plate);
 
-  // 縁に立つ小さな魔法陣。外を向いて立ち、自分の軸で回る。
-  function standing(radius, points) {
+  // 縁に浮かぶ小さな魔法陣。外を向き、自分の軸で回る。
+  // 薄く現れながら浮かび上がらせるので、1 つずつ専用の素材を持たせる。
+  function standing(radius, points, own = mat) {
     const face = new THREE.Group();
-    face.add(mesh(ringBand(radius, radius + 0.022), mat.light));
-    face.add(mesh(ringBand(radius * 0.72, radius * 0.72 + 0.01), mat.line));
-    face.add(mesh(tickRing(radius * 0.96, 24, radius * 0.1, 0.006), mat.dim));
-    face.add(mesh(starOutline(radius * 0.7, points, points === 6 ? 2 : Math.floor(points / 2), 0.01), mat.line));
-    face.add(mesh(ringBand(radius * 0.16, radius * 0.16 + 0.01), mat.light));
+    face.add(mesh(ringBand(radius, radius + 0.022), own.light));
+    face.add(mesh(ringBand(radius * 0.72, radius * 0.72 + 0.01), own.line));
+    face.add(mesh(tickRing(radius * 0.96, 24, radius * 0.1, 0.006), own.dim));
+    face.add(mesh(starOutline(radius * 0.7, points, points === 6 ? 2 : Math.floor(points / 2), 0.01), own.line));
+    face.add(mesh(ringBand(radius * 0.16, radius * 0.16 + 0.01), own.light));
     return face;
   }
   const count = Math.round(p.preview ? Math.min(p.circles, 6) : p.circles);
   const stands = Array.from({ length: count }, (_, i) => {
-    const place = rimPlacement(i, count, MAIN.r + 0.06);
+    const own = { light: glow(p.light, 0), line: glow(p.color, 0), dim: glow(p.color, 0) };
     const hinge = new THREE.Group();
-    hinge.position.set(place.x, 0, place.z);
-    hinge.rotation.y = place.facing;
-    const lean = new THREE.Group();
-    const face = standing(0.44, i % 2 ? 5 : 6);
-    face.position.y = 0.5;
-    lean.add(face);
-    hinge.add(lean);
+    const face = standing(0.44, i % 2 ? 5 : 6, own);
+    hinge.add(face);
     tiers[1].group.add(hinge);
-    return { lean, face, up: still ? 1 : 0, phase: i * 0.9 };
+    // up は現れ具合、out は発動のときに外へ浮き出る量、shift は隣の位置へ巡る量。
+    return { hinge, face, own, index: i, up: still ? 1 : 0, out: 0, shift: 0, phase: i * 0.9 };
   });
   // 上の段には、斜めに傾いた小さな輪を 3 つ。
   const uppers = Array.from({ length: 3 }, (_, i) => {
@@ -191,7 +188,7 @@ export function mount(container, options = {}) {
     ring.add(mesh(flatBand(def.radius + 0.03, def.radius + 0.17), index % 2 ? mat.runesA : mat.runesB));
     axis.add(ring);
     root.add(axis);
-    return { ...def, axis, ring, open: still ? 1 : 0 };
+    return { ...def, axis, ring, index, open: still ? 1 : 0, align: 0 };
   });
 
   // 頂から立つ光の柱と、足元の光。
@@ -225,13 +222,16 @@ export function mount(container, options = {}) {
   root.add(new THREE.Points(moteGeometry, new THREE.PointsMaterial({ color: p.light, size: 0.045, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false })));
 
   const state = { spread: 1, flash: 0 };
+  // 発動の間、光の粒を速く立ちのぼらせるための進み。
+  let moteBoost = 0;
   stage.onResize(() => {
     const view = stage.viewport();
     root.scale.setScalar(Math.min(1.05, view.width / 8.6, view.height / 6.3));
   });
 
-  stage.onFrame((time) => {
+  stage.onFrame((time, dt) => {
     const t = still ? 0 : time * p.speed;
+    moteBoost = (moteBoost + dt * state.flash * 0.9) % 1;
     root.rotation.x = 0.36 + stage.pointer.sy * 0.25 + Math.sin(t * 0.13) * 0.03;
     root.rotation.y = stage.pointer.sx * 0.5 + t * 0.04;
 
@@ -240,25 +240,38 @@ export function mount(container, options = {}) {
       const base = TIERS[0].y;
       item.group.position.y = base + (tier.y - base) * item.rise * state.spread;
       item.group.scale.setScalar(Math.max(0.001, item.rise));
-      item.group.rotation.y = t * tier.spin * 2.2;
+      // twist は、発動のときに 1 回転ぶん余計に回る量。
+      item.group.rotation.y = t * tier.spin * 2.2 + item.twist * TAU * Math.sign(tier.spin);
     }
     cage.rotation.y = -t * 0.06;
     cage.scale.set(tiers[1].rise, tiers[TIERS.length - 1].rise * state.spread, tiers[1].rise);
     cage.position.y = tiers[1].group.position.y;
 
     for (const stand of stands) {
-      // 寝た状態から起き上がり、起きたあとは前後に小さく揺れる。
-      stand.lean.rotation.x = (1 - stand.up) * (Math.PI / 2) + Math.sin(t * 0.8 + stand.phase) * 0.12 * stand.up;
-      stand.face.rotation.z = t * 0.7 * (stand.phase % 2 > 1 ? -1 : 1);
+      // 縁の少し下から、薄く現れながら浮かび上がる。現れたあとは、ゆっくり上下しながら左右に向きを振る。
+      const place = rimPlacement(stand.index + stand.shift, count, MAIN.r + 0.06 + stand.out * 0.75);
+      const bob = Math.sin(t * 0.9 + stand.phase) * 0.05;
+      stand.hinge.position.set(place.x, -0.55 + 1.05 * stand.up + bob * stand.up + stand.out * 0.7, place.z);
+      stand.hinge.rotation.y = place.facing + Math.sin(t * 0.5 + stand.phase) * 0.22 * stand.up;
+      stand.face.scale.setScalar(0.55 + 0.45 * stand.up + stand.out * 0.25);
+      stand.face.rotation.z = t * 0.7 * (stand.phase % 2 > 1 ? -1 : 1) + stand.out * 2.5;
+      const visible = Math.min(1, stand.up);
+      stand.own.light.opacity = visible;
+      stand.own.line.opacity = 0.95 * visible;
+      stand.own.dim.opacity = 0.4 * visible;
     }
     for (const upper of uppers) {
       upper.hinge.rotation.x = 0.55 + Math.sin(t * 0.6 + upper.phase) * 0.2;
       upper.face.rotation.z = -t * 1.1;
     }
     for (const gyro of gyros) {
-      gyro.ring.rotation.z = t * gyro.speed * 2;
-      gyro.axis.rotation.x = gyro.tilt[0] + Math.sin(t * 0.21 + gyro.radius) * 0.14;
-      gyro.ring.scale.setScalar(Math.max(0.001, gyro.open));
+      // align が 1 に近づくと、軸が水平にそろい、頂の上に冠のように重なる。
+      const k = gyro.align;
+      const wobble = Math.sin(t * 0.21 + gyro.radius) * 0.14 * (1 - k);
+      gyro.ring.rotation.z = t * gyro.speed * 2 + k * TAU;
+      gyro.axis.rotation.set(gyro.tilt[0] + wobble + (Math.PI / 2 - gyro.tilt[0]) * k, gyro.tilt[1] * (1 - k), gyro.tilt[2] * (1 - k));
+      gyro.axis.position.y = 0.1 + (APEX.y + 0.45 + gyro.index * 0.32 - 0.1) * k;
+      gyro.ring.scale.setScalar(Math.max(0.001, gyro.open * (1 - k * (0.45 + gyro.index * 0.08))));
     }
 
     const breath = 0.75 + 0.25 * Math.sin(t * 1.7);
@@ -274,7 +287,7 @@ export function mount(container, options = {}) {
 
     for (let i = 0; i < MOTES; i += 1) {
       const seed = moteSeeds[i];
-      const lift = (seed.offset + t * seed.speed) % 1;
+      const lift = (seed.offset + t * seed.speed + moteBoost) % 1;
       const swirl = seed.angle + t * 0.2 + lift * 2;
       const radius = seed.radius * (1 - lift * 0.6);
       motePositions[i * 3] = Math.cos(swirl) * radius;
@@ -285,23 +298,53 @@ export function mount(container, options = {}) {
   });
 
   const bounce = spring({ stiffness: 90, damping: 8 });
+  // 発動。段が下から順に回り、縁の魔法陣が浮き出て隣の位置へ巡り、大きな輪が頂の上にそろい、光の柱が強まる。
+  let casting = false;
   function cast() {
-    if (still) return;
+    if (still || casting) return;
+    casting = true;
+    animate(tiers, { twist: [0, 1], duration: 1700, ease: 'inOutQuart', delay: stagger(150), onComplete: () => tiers.forEach((tier) => (tier.twist = 0)) });
+    animate(stands, {
+      out: [
+        { to: 1, duration: 700, ease: 'outCubic' },
+        { to: 1, duration: 900 },
+        { to: 0, duration: 900, ease: 'inOutCubic' },
+      ],
+      shift: [{ to: 0, duration: 350 }, { to: 1, duration: 1700, ease: 'inOutCubic' }],
+      delay: stagger(60),
+      // ちょうど隣の位置まで巡るので、0 に戻しても並びは変わらない。
+      onComplete: () => stands.forEach((stand) => (stand.shift = 0)),
+    });
+    animate(gyros, {
+      align: [
+        { to: 1, duration: 900, ease: 'outExpo' },
+        { to: 1, duration: 800 },
+        { to: 0, duration: 1300, ease: 'inOutQuart' },
+      ],
+      delay: stagger(140, { start: 350 }),
+    });
     animate(state, {
-      spread: [{ to: 1.32, duration: 420, ease: 'outExpo' }, { to: 1, ease: bounce }],
-      flash: [{ to: 1, duration: 160, ease: 'outQuad' }, { to: 0, duration: 1400, ease: 'outExpo' }],
+      flash: [
+        { to: 0.15, duration: 700, ease: 'inQuad' },
+        { to: 1, duration: 500, ease: 'outQuad' },
+        { to: 0, duration: 1900, ease: 'outExpo' },
+      ],
+      spread: [{ to: 1.14, duration: 1200, ease: 'inOutSine' }, { to: 1, ease: bounce }],
+      onComplete() {
+        casting = false;
+      },
     });
   }
   container.addEventListener('pointerdown', cast);
 
   let previewTimer = 0;
   if (!still) {
-    // 登場。足元の輪から順に段が立ち上がり、縁の魔法陣が起き、最後に大きな輪が広がる。
+    // 登場。足元の輪から順に段が立ち上がり、縁の魔法陣が薄く現れながら浮かび上がり、最後に大きな輪が広がる。
     animate(tiers, { rise: 1, duration: 1500, ease: 'outExpo', delay: stagger(220) });
-    animate(stands, { up: 1, ease: bounce, delay: stagger(90, { start: 900 }) });
+    animate(stands, { up: 1, duration: 1900, ease: 'outCubic', delay: stagger(160, { start: 1000 }) });
     animate(gyros, { open: 1, duration: 1700, ease: 'outBack(1.4)', delay: stagger(240, { start: 1300 }) });
     animate(state, { flash: [{ to: 0.8, duration: 300, delay: 1500 }, { to: 0, duration: 1600, ease: 'outExpo' }] });
-    if (p.preview) previewTimer = setInterval(cast, 5600);
+    if (p.preview) previewTimer = setInterval(cast, 7200);
   }
 
   return {

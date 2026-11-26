@@ -1,5 +1,5 @@
 import { animate, createTimer, utils } from 'animejs';
-import { createDisposer, createRoot, h, injectStyle, prefersReducedMotion, removeRoot } from '../../lib/dom.js';
+import { createDisposer, createRoot, h, injectStyle, localPointer, prefersReducedMotion, removeRoot } from '../../lib/dom.js';
 import { resolveParams } from '../../lib/params.js';
 
 export const meta = {
@@ -8,7 +8,7 @@ export const meta = {
   category: 'ascii',
   libs: ['animejs'],
   description:
-    '現在の時刻を、小さな記号を並べた大きな数字で表示します。まわりの輪には 60 個の印が並び、秒を表す記号が 1 秒ごとに弾みながら次の印へ進みます。数字が変わるときは上から下へ書き換わります。待ち受け画面や、作業中に置いておく時計として使えます。',
+    '現在の時刻を、小さな記号を並べた大きな数字で表示します。まわりの輪には 60 個の印が並び、秒を表す記号が 1 秒ごとに弾みながら次の印へ進みます。数字が変わるときは上から下へ書き換わります。タップするとぜんまいを巻いたように、秒の記号がいったん後ろへ引いてから輪を 1 周駆け抜け、数字が左から順に回って今の時刻に止まり、触った場所から文字の輪が広がります。待ち受け画面や、作業中に置いておく時計として使えます。',
   params: {
     format: {
       type: 'select',
@@ -146,6 +146,43 @@ export function mount(container, options = {}) {
   const intro = { v: reduced ? 1 : 0 };
   let lastSecond = -1;
   let spin = 0;
+  let ringTurn = 0;
+  // タップの仕掛け。lap は秒の記号が余分に回る量（1 で 1 周）、rush は輪の回る勢い、wave は触った場所から広がる輪。
+  const wind = { lap: 0, rush: 0, wave: -1 };
+  const tap = { x: 0.5, y: 0.5 };
+  const rollUntil = [0, 0, 0, 0, 0];
+  const ROLLING = [0, 1, 3, 4];
+
+  // ぜんまいを巻く。準備で秒の記号が後ろへ引き、山場で 1 周駆け抜けて数字が回り、余韻で輪の回転がゆっくり落ち着く。
+  function windUp(event) {
+    if (reduced) return;
+    const local = event && g.cols ? localPointer(event, root) : { x: 0.5, y: 0.5 };
+    tap.x = local.x;
+    tap.y = local.y;
+    utils.remove(wind);
+    wind.lap = 0;
+    wind.wave = 0;
+    animate(wind, {
+      lap: [
+        { to: -0.1, duration: 220, ease: 'outQuad' },
+        { to: 1, duration: 1500, ease: 'inOutCubic' },
+      ],
+      rush: [
+        { to: -0.4, duration: 220, ease: 'outQuad' },
+        { to: 1, duration: 520, ease: 'outQuad' },
+        { to: 0, duration: 1900, ease: 'outCubic' },
+      ],
+      wave: { to: 1, duration: 1700, ease: 'outQuad' },
+      onComplete() {
+        wind.lap = 0;
+        wind.wave = -1;
+      },
+    });
+    // 数字は左から順に、時間差で止まる。
+    ROLLING.forEach((k, order) => {
+      rollUntil[k] = spin + 0.55 + order * 0.24;
+    });
+  }
 
   // 時刻を読み、変わった数字は書き換えを始め、秒の記号を次の印へ弾ませる。
   function sync(now) {
@@ -183,6 +220,22 @@ export function mount(container, options = {}) {
     const now = new Date();
     sync(now);
     spin += dt;
+    ringTurn += dt * (1 + wind.rush * 45);
+    // 回っている数字を進め、時間が来たものから今の時刻へ書き換える。
+    for (const k of ROLLING) {
+      if (!rollUntil[k]) continue;
+      const slot = slots[k];
+      if (spin < rollUntil[k]) slot.roll = String((Math.floor(spin * 16) * 7 + k * 3) % 10);
+      else {
+        rollUntil[k] = 0;
+        slot.from = slot.roll ?? slot.to;
+        slot.roll = null;
+        utils.remove(slot);
+        slot.mix = 0;
+        animate(slot, { mix: 1, duration: 620, ease: 'inOutCubic' });
+      }
+    }
+    const rollShift = ((spin * 16) % 1) - 0.5;
     const cx = cols / 2;
     const cy = rows / 2;
     const rx = cols / 2 - 4;
@@ -199,17 +252,36 @@ export function mount(container, options = {}) {
     for (let i = 0; i < dots; i += 1) {
       if (i / dots > intro.v) break;
       if ((i + Math.floor(spin * 3)) % 4 === 0) continue;
-      const angle = (i / dots) * Math.PI * 2 + spin * 0.05;
+      const angle = (i / dots) * Math.PI * 2 + ringTurn * 0.05;
       plot(0, cx + Math.cos(angle) * rx * 0.88, cy + Math.sin(angle) * ry * 0.86, '.');
+    }
+    // 触った場所から広がる文字の輪。数字や印はこの上に描く。
+    if (wind.wave >= 0 && wind.wave < 1) {
+      const reach = wind.wave * Math.max(cols * aspect, rows) * 1.05;
+      const steps = Math.max(12, Math.ceil(reach * 5));
+      const ch = wind.wave < 0.35 ? '*' : wind.wave < 0.7 ? ':' : '.';
+      for (let s = 0; s < steps; s += 1) {
+        if (wind.wave > 0.5 && s % 2) continue;
+        const angle = (s / steps) * Math.PI * 2;
+        plot(1, tap.x * cols + (Math.cos(angle) * reach) / aspect, tap.y * rows + Math.sin(angle) * reach, ch);
+      }
     }
     // 60 個の印。過ぎた秒は濃く、これからの秒は淡く描く。
     const second = lastSecond;
+    const headPos = hand.pos + wind.lap * 60;
+    const swept = wind.lap * 60;
     for (let i = 0; i < 60; i += 1) {
       if (i / 60 > intro.v) break;
       const angle = angleOf(i);
       const x = cx + Math.cos(angle) * rx;
       const y = cy + Math.sin(angle) * ry;
       const passed = i <= second;
+      // 駆け抜けた直後の印は、別の色で光らせる。
+      const behind = (((i - hand.pos) % 60) + 60) % 60;
+      if (swept > 0 && behind < swept && behind > swept - 16) {
+        plot(1, x, y, i % 5 === 0 ? '#' : swept - behind < 6 ? '*' : '+');
+        continue;
+      }
       if (i % 5 === 0) {
         plot(0, x, y, passed ? '#' : '+');
         const label = pad(i);
@@ -218,10 +290,10 @@ export function mount(container, options = {}) {
     }
     // 秒の記号と、その後ろに続く尾。
     for (let k = TRAIL.length; k >= 1; k -= 1) {
-      const angle = angleOf(hand.pos - k * 0.3);
+      const angle = angleOf(headPos - k * (0.3 + Math.max(0, wind.rush) * 0.9));
       plot(1, cx + Math.cos(angle) * rx, cy + Math.sin(angle) * ry, TRAIL[k - 1]);
     }
-    const headAngle = angleOf(hand.pos);
+    const headAngle = angleOf(headPos);
     const hx = Math.round(cx + Math.cos(headAngle) * rx);
     const hy = Math.round(cy + Math.sin(headAngle) * ry);
     g.put(1, hy, hx - 1, '(@)');
@@ -250,13 +322,13 @@ export function mount(container, options = {}) {
           const slot = slots[k];
           // 書き換えの境目より上は新しい数字、下は古い数字。
           const line = slot.mix * (GLYPH_H + 1.2) - 0.6;
-          const key = slot.mix >= 1 || fy < line ? slot.to : slot.from;
+          const key = slot.roll ?? (slot.mix >= 1 || fy < line ? slot.to : slot.from);
           const glyph = FONT[key];
           if (!glyph) continue;
-          let cover = coverage(glyph, fx, fy);
+          let cover = coverage(glyph, fx, slot.roll ? fy + rollShift * 2.4 : fy);
           if (k === 2 && !colonOn) cover *= 0.72;
           if (cover > best) best = cover;
-          if (slot.mix < 1 && Math.abs(fy - line) < 0.5 / uy + 0.2 && fx > -0.3 && fx < GLYPH_W + 0.3) flash = true;
+          if (!slot.roll && slot.mix < 1 && Math.abs(fy - line) < 0.5 / uy + 0.2 && fx > -0.3 && fx < GLYPH_W + 0.3) flash = true;
         }
         const index = r * cols + c;
         if (flash) {
@@ -303,6 +375,8 @@ export function mount(container, options = {}) {
   // 動きを止める設定でも時計としては進める。1 秒ごとに、動きなしで描き直す。
   if (reduced) disposer.interval(() => tick(0), 1000);
   else animate(intro, { v: 1, duration: 1500, ease: 'outCubic' });
+  disposer.listen(root, 'pointerdown', windUp);
+  if (preview && !reduced) disposer.interval(() => windUp(), 6500);
 
   const refit = () => {
     if (g.fit() && reduced) tick(0);
@@ -320,12 +394,14 @@ export function mount(container, options = {}) {
   refit();
 
   return {
+    windUp,
     destroy() {
       resizeObserver.disconnect();
       intersectionObserver.disconnect();
       timer?.pause();
       utils.remove(intro);
       utils.remove(hand);
+      utils.remove(wind);
       utils.remove(slots);
       disposer.run();
       removeRoot(root);

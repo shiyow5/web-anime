@@ -8,7 +8,7 @@ export const meta = {
   category: 'pixel',
   libs: ['animejs'],
   description:
-    '一つ目の小さなロボットが、流れる地面の上を 4 コマの足踏みで走り続けます。クリックすると跳ねて、着地で土ぼこりが上がります。読み込み中の画面や、ページの隅に置く飾りに使えます。戻り値の jump() でも跳ねさせられます。',
+    '一つ目の小さなロボットが、流れる地面の上を 4 コマの足踏みで走り続けます。クリックすると跳ねて、着地で土ぼこりが上がります。宙にいる間にもう一度クリックすると、足もとに噴射の粒を出して 2 段目を跳び、着地では大きな土ぼこりが上がって、頭の上に「!」の吹き出しが点滅します。読み込み中の画面や、ページの隅に置く飾りに使えます。戻り値の jump() でも跳ねさせられます。',
   params: {
     scene: {
       type: 'select',
@@ -146,6 +146,9 @@ export function mount(container, options = {}) {
   const dustColor = mix(scene.top, '#ffffff', 0.35);
   const cloudColor = mix(scene.sky[2], '#ffffff', 0.4);
   const state = { y: 0, enter: reduced ? 0 : -40 };
+  const fx = { bubble: 0 };
+  let jumps = 0;
+  let firstJump = null;
   let dust = [];
   let time = 0;
   let run = 0;
@@ -234,6 +237,17 @@ export function mount(container, options = {}) {
     const blink = Math.floor(time * 3) % 2 === 0;
     drawSprite(ctx, BODY, x, top - bob, { ...palette, a: blink ? p.accent : '#ffffff' });
     drawSprite(ctx, airborne ? LEGS_AIR : LEGS[frame], x, top + BODY.length, palette);
+    // 2 段跳びの着地で出る吹き出し。点滅しながら消える。
+    if (fx.bubble > 0 && Math.floor(fx.bubble * 9) % 2 === 0) {
+      const bx = x + SPRITE_W;
+      const by = top - 9;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(bx, by, 7, 7);
+      ctx.fillRect(bx - 1, by + 6, 2, 2);
+      ctx.fillStyle = '#1a1a2a';
+      ctx.fillRect(bx + 3, by + 1, 1, 3);
+      ctx.fillRect(bx + 3, by + 5, 1, 1);
+    }
   }
 
   function draw() {
@@ -248,16 +262,42 @@ export function mount(container, options = {}) {
   }
 
   function jump() {
-    if (destroyed || reduced || airborne) return;
+    if (destroyed || reduced) return;
+    if (airborne) {
+      // 宙にいる間の 2 回目。足もとから噴射して、もう一段高く跳ぶ。
+      if (jumps >= 2) return;
+      jumps = 2;
+      lastJump = time;
+      // 1 段目の動きは止める。止めないと、1 段目の着地の処理が途中で走る。
+      firstJump?.pause();
+      const groundY = view.h - Math.max(9, Math.round(view.h * 0.2));
+      for (let i = 0; i < 8; i += 1) dust.push({ x: view.w * 0.3 + utils.random(-4, 4, 1), y: groundY + state.y, vx: utils.random(-14, 14, 1), vy: utils.random(10, 30, 1), life: 0, max: utils.random(0.25, 0.5, 2) });
+      animate(state, {
+        y: [
+          { to: Math.min(state.y, -p.jump * 0.6) - p.jump * 0.8, duration: 280, ease: 'outQuad' },
+          { to: 0, duration: 400, ease: 'inQuad' },
+        ],
+        onComplete() {
+          airborne = false;
+          jumps = 0;
+          puff(view.w * 0.3, groundY, 16);
+          for (let i = 0; i < 8; i += 1) dust.push({ x: view.w * 0.3, y: groundY, vx: utils.random(8, 30, 1), vy: -utils.random(2, 14, 1), life: 0, max: utils.random(0.3, 0.6, 2) });
+          animate(fx, { bubble: [1, 0], duration: 1000, ease: 'linear' });
+        },
+      });
+      return;
+    }
+    jumps = 1;
     airborne = true;
     lastJump = time;
-    animate(state, {
+    firstJump = animate(state, {
       y: [
         { to: -p.jump, duration: 300, ease: 'outQuad' },
         { to: 0, duration: 320, ease: 'inQuad' },
       ],
       onComplete() {
         airborne = false;
+        jumps = 0;
         const groundY = view.h - Math.max(9, Math.round(view.h * 0.2));
         puff(view.w * 0.3, groundY, 6);
       },
@@ -287,6 +327,7 @@ export function mount(container, options = {}) {
   const destroyBase = () => {
     destroyed = true;
     utils.remove(state);
+    utils.remove(fx);
     disposer.run();
     removeRoot(root);
   };

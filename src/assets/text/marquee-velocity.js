@@ -1,4 +1,4 @@
-import { createTimer, utils } from 'animejs';
+import { animate, createTimer, utils } from 'animejs';
 import { createDisposer, createRoot, h, injectStyle, prefersReducedMotion, removeRoot, s } from '../../lib/dom.js';
 import { resolveParams, splitList } from '../../lib/params.js';
 
@@ -8,7 +8,7 @@ export const meta = {
   category: 'text',
   libs: ['animejs'],
   description:
-    '文字の帯が上下 2 段で、逆向きに途切れずに流れます。ポインターを速く動かすと加速して、動かした向きへ斜めに傾き、手を止めるとゆっくり元の速さに戻ります。売り出しの告知や、ページの区切りの帯に使います。',
+    '文字の帯が上下 2 段で、逆向きに途切れずに流れます。ポインターを速く動かすと加速して、動かした向きへ斜めに傾き、手を止めるとゆっくり元の速さに戻ります。帯をタップすると、その段がつっかえて止まり、はじかれたように逆向きへ飛び出して、そのまま流れる向きが入れ替わります。もう一方の段は反動で押し戻されてから追いかけます。売り出しの告知や、ページの区切りの帯に使います。',
   params: {
     text: { type: 'text', label: '文（/ で区切る）', default: '秋の新作が入荷 / 送料無料 / 本日 21 時まで', maxLength: 120 },
     speed: { type: 'range', label: '流れる速さ', min: 0.2, max: 3, step: 0.1, default: 1 },
@@ -19,7 +19,7 @@ export const meta = {
 };
 
 const CSS = `
-.ua-mv{position:absolute;inset:0;display:grid;align-content:center;overflow:hidden;container-type:size;background:var(--ua-bg);
+.ua-mv{cursor:pointer;position:absolute;inset:0;display:grid;align-content:center;overflow:hidden;container-type:size;background:var(--ua-bg);
   color:var(--ua-ink);font-family:var(--ua-display,system-ui,sans-serif)}
 .ua-mv__row{overflow:hidden;padding:.12em 0;font-size:clamp(22px,min(13cqw,26cqh),150px);font-weight:800;line-height:1.1;white-space:nowrap}
 .ua-mv__row--solid{background:var(--ua-ink);color:var(--ua-bg)}
@@ -60,7 +60,7 @@ export function mount(container, options = {}) {
     const skew = h('div', { class: 'ua-mv__skew' });
     const track = h('div', { class: 'ua-mv__track' }, skew);
     const el = h('div', { class: `ua-mv__row ua-mv__row--${kind}`, 'aria-hidden': 'true' }, track);
-    return { el, track, skew, dir, list, unit: 1, pos: 0 };
+    return { el, track, skew, dir, list, unit: 1, pos: 0, mul: 1, rest: 1 };
   });
   const value = h('b', { text: '×1.0' });
   const gauge = h('em');
@@ -144,12 +144,15 @@ export function mount(container, options = {}) {
       spin += dt * 50 * factor;
       root.style.setProperty('--ua-spin', `${spin.toFixed(1)}deg`);
       for (const row of rows) {
-        row.pos += base * factor * dt;
+        row.pos += base * factor * row.mul * dt;
         place(row);
-        row.skew.style.transform = `skewX(${(-angle * (row.dir < 0 ? 1 : -1)).toFixed(2)}deg)`;
+        // はじかれて速さが変わっているあいだは、その分だけ余計に傾く。
+        const flickLean = utils.clamp((row.mul - row.rest) * 3.2, -22, 22) * row.dir;
+        row.skew.style.transform = `skewX(${(-angle * (row.dir < 0 ? 1 : -1) + flickLean).toFixed(2)}deg)`;
       }
-      gauge.style.transform = `scaleX(${utils.clamp(factor / (1 + MAX_BOOST), 0.06, 1).toFixed(3)})`;
-      const text = `×${factor.toFixed(1)}`;
+      const shownFactor = factor * Math.max(1, Math.abs(rows[0].mul), Math.abs(rows[1].mul));
+      gauge.style.transform = `scaleX(${utils.clamp(shownFactor / (1 + MAX_BOOST), 0.06, 1).toFixed(3)})`;
+      const text = `×${shownFactor.toFixed(1)}`;
       if (text !== shown) {
         shown = text;
         value.textContent = text;
@@ -158,7 +161,44 @@ export function mount(container, options = {}) {
   });
   disposer.add(() => timer.pause());
 
+  // 準備: タップした段がつっかえて止まる。山場: はじかれて逆向きへ飛び出し、もう一方の段は反動で押し戻される。
+  // 余韻: ゆれながら速さが落ち着き、タップした段は逆向きのまま流れ続ける。
+  let flicks = 0;
+  function flick(event) {
+    const rect = root.getBoundingClientRect();
+    const hasPoint = typeof event?.clientY === 'number' && rect.height > 0;
+    const top = hasPoint ? event.clientY < rect.top + rect.height / 2 : flicks % 2 === 0;
+    flicks += 1;
+    movedAt = performance.now();
+    rows.forEach((row, index) => {
+      utils.remove(row);
+      if ((index === 0) === top) {
+        const next = -row.rest;
+        row.rest = next;
+        animate(row, {
+          mul: [
+            { to: -next * 0.04, duration: 260, ease: 'outCubic' },
+            { to: next * 9, duration: 170, ease: 'outQuad' },
+            { to: next, duration: 1700, ease: 'outElastic(1, .7)' },
+          ],
+        });
+      } else {
+        animate(row, {
+          mul: [
+            { to: -row.rest * 1.6, duration: 240, ease: 'outQuad' },
+            { to: row.rest * 4.5, duration: 420, ease: 'inOutQuad' },
+            { to: row.rest, duration: 1300, ease: 'outCubic' },
+          ],
+          delay: 250,
+        });
+      }
+    });
+  }
+  disposer.listen(root, 'pointerdown', flick);
+  disposer.add(() => utils.remove(rows));
+
   return {
+    flick,
     destroy() {
       disposer.run();
       removeRoot(root);

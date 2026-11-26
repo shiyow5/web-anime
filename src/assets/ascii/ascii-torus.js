@@ -8,7 +8,7 @@ export const meta = {
   category: 'ascii',
   libs: ['animejs'],
   description:
-    '小さな文字を敷き詰めて、回り続けるドーナツ形を描きます。光の当たり方を 70 段階の文字の濃さに置き換え、強い照り返しだけ別の色で重ねています。ポインターを中心から離すと、その向きに回転が速まります。見出しの背景や読み込み中の画面に使えます。',
+    '小さな文字を敷き詰めて、回り続けるドーナツ形を描きます。光の当たり方を 70 段階の文字の濃さに置き換え、強い照り返しだけ別の色で重ねています。ポインターを中心から離すと、その向きに回転が速まります。クリックすると、管が太く、輪が小さく縮んでから、押した向きへはじかれたように勢いよく回り、ゴムのように揺れながら元の形へ戻ります。左上の寸法の数字も一緒に動きます。見出しの背景や読み込み中の画面に使えます。',
   params: {
     color: { type: 'color', label: '文字の色', default: '#f1c98a' },
     accent: { type: 'color', label: '照り返しの色', default: '#fff7e0' },
@@ -92,8 +92,38 @@ export function mount(container, options = {}) {
   const disposer = createDisposer();
   const g = createSurface(root, 'ua-atr', 2, (w) => clamp(w / (preview ? 64 : 105) / p.detail, 4.5, 16));
 
-  const tubeR = p.thickness;
-  const ringR = 0.9 - tubeR;
+  let tubeR = p.thickness;
+  let ringR = 0.9 - tubeR;
+  const fx = { squeeze: 0, spinA: 0, spinB: 0 };
+
+  // はじく。準備: 縮んで太くなる。山場: 押した向きへ勢いよく回る。余韻: 揺れながら形が戻る。
+  function flick(event) {
+    if (reduced) return;
+    const local = event && Number.isFinite(event.clientX) ? localPointer(event, root) : { x: Math.random(), y: Math.random() };
+    const dx = (local.x - 0.5) * 2;
+    const dy = (local.y - 0.5) * 2;
+    const len = Math.hypot(dx, dy);
+    const ux = len > 0.08 ? dx / len : 0.7;
+    const uy = len > 0.08 ? dy / len : 0.7;
+    animate(fx, {
+      squeeze: [
+        { to: 1, duration: 200, ease: 'outQuad' },
+        { to: 0, duration: 1500, ease: 'outElastic(1, .32)' },
+      ],
+      spinA: [
+        { to: 0, duration: 180 },
+        { to: uy * 9, duration: 120, ease: 'outQuad' },
+        { to: 0, duration: 2300, ease: 'outCubic' },
+      ],
+      spinB: [
+        { to: 0, duration: 180 },
+        { to: ux * 9, duration: 120, ease: 'outQuad' },
+        { to: 0, duration: 2300, ease: 'outCubic' },
+      ],
+    });
+  }
+  disposer.listen(root, 'pointerdown', flick);
+  if (preview && !reduced) disposer.interval(() => flick(), 5200);
   const ptr = { x: 0.5, y: 0.5, inside: false };
   const intro = { v: reduced ? 1 : 0 };
   let angleA = 1.0;
@@ -121,8 +151,10 @@ export function mount(container, options = {}) {
     const ease = 1 - Math.exp(-dt * 4);
     pushX += (targetX - pushX) * ease;
     pushY += (targetY - pushY) * ease;
-    angleA += dt * p.speed * (0.55 + pushY * 2.6);
-    angleB += dt * p.speed * (0.85 + pushX * 2.6);
+    angleA += dt * (p.speed * (0.55 + pushY * 2.6) + fx.spinA);
+    angleB += dt * (p.speed * (0.85 + pushX * 2.6) + fx.spinB);
+    tubeR = p.thickness * (1 + 0.38 * fx.squeeze);
+    ringR = (0.9 - p.thickness) * (1 - 0.2 * fx.squeeze);
 
     // 視点側の座標から、ドーナツ形に固定した座標へ移す回転（X 軸まわりのあと Z 軸まわり）。
     const ca = Math.cos(angleA);
@@ -253,6 +285,7 @@ export function mount(container, options = {}) {
       intersectionObserver.disconnect();
       timer?.pause();
       utils.remove(intro);
+      utils.remove(fx);
       disposer.run();
       removeRoot(root);
     },

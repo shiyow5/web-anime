@@ -8,7 +8,7 @@ export const meta = {
   category: 'clock',
   libs: ['animejs'],
   description:
-    '腕時計の文字盤のような、針で時刻を示す時計です。読み込み時に目盛りが順に現れ、針が 12 時の位置から現在の時刻まで振れて止まります。秒針は 1 秒ごとに、機械式のように少し行き過ぎてから戻ります。',
+    '腕時計の文字盤のような、針で時刻を示す時計です。読み込み時に目盛りが順に現れ、針が 12 時の位置から現在の時刻まで振れて止まります。秒針は 1 秒ごとに、機械式のように少し行き過ぎてから戻ります。タップすると、針がいったん逆へ引かれてから時針 1 周・分針 3 周・秒針 5 周の早回しになり、減速して今の時刻に戻ります。目盛りは触った方角から順に波打ちます。',
   params: {
     motion: {
       type: 'select',
@@ -33,7 +33,7 @@ const CSS = `
 .ua-ac__face{fill:var(--ua-face)}
 .ua-ac__rim{fill:none;stroke:var(--ua-ink);stroke-width:1.2;opacity:.35}
 .ua-ac__tick{stroke:var(--ua-ink);stroke-linecap:round;transform-box:fill-box;transform-origin:center}
-.ua-ac__numeral{fill:var(--ua-ink);font-size:26px;font-weight:700;text-anchor:middle;dominant-baseline:central}
+.ua-ac__numeral{transform-box:fill-box;transform-origin:center;fill:var(--ua-ink);font-size:26px;font-weight:700;text-anchor:middle;dominant-baseline:central}
 .ua-ac__hand{transform-origin:200px 200px}
 .ua-ac__hand line{stroke:var(--ua-ink);stroke-linecap:round}
 .ua-ac__hand--second line,.ua-ac__hand--second circle{stroke:var(--ua-accent);fill:var(--ua-accent)}
@@ -124,6 +124,9 @@ export function mount(container, options = {}) {
   let lastSecond = -1;
   // 0 時をまたぐと秒数が 0 に戻る。秒針が逆回りしないよう、1 日ぶんの角度を足して増やし続ける。
   let dayOffset = 0;
+  // 秒針の角度（刻むときに弾ませる）と、タップでの早回しの進み具合（1 で 1 回ぶん）。
+  const sec = { v: 0 };
+  const spin = { k: 0 };
   const start = handAngles(new Date());
   // 起動。目盛りを順に出し、針を 12 時から現在の時刻まで振る。
   const intro = createTimeline({
@@ -142,17 +145,57 @@ export function mount(container, options = {}) {
     onUpdate() {
       if (!running) return;
       const angles = handAngles(new Date());
-      place(angles);
       if (p.motion === 'sweep') {
-        utils.set(second, { rotate: angles.second });
+        sec.v = angles.second;
       } else if (angles.wholeSecond !== lastSecond) {
         if (lastSecond !== -1 && angles.wholeSecond < lastSecond) dayOffset += FULL_DAY;
+        const first = lastSecond === -1;
         lastSecond = angles.wholeSecond;
-        animate(second, { rotate: dayOffset + angles.wholeSecond, duration: 420, ease: 'outElastic(1, .45)' });
+        if (first) sec.v = dayOffset + angles.wholeSecond + 12;
+        animate(sec, { v: dayOffset + angles.wholeSecond, duration: 420, ease: 'outElastic(1, .45)' });
       }
+      // 早回しのあいだは、時針 1 周・分針 3 周・秒針 5 周ぶんを上乗せする。k が整数に着くと、針は今の時刻に重なる。
+      utils.set(hour, { rotate: angles.hour + spin.k * 360 });
+      utils.set(minute, { rotate: angles.minute + spin.k * 1080 });
+      utils.set(second, { rotate: sec.v + spin.k * 1800 });
     },
   });
   disposer.add(() => clock.pause());
+  disposer.add(() => utils.remove([sec, spin]));
+
+  // タップ。針を少し逆へ引いてから早回しし、減速して今の時刻へ戻す。目盛りは触った方角から波打つ。
+  function wind(event) {
+    if (!running) return;
+    utils.remove(spin);
+    const goal = Math.floor(spin.k + 0.5) + 1;
+    animate(spin, {
+      k: [
+        { to: spin.k - 0.035, duration: 170, ease: 'outQuad' },
+        { to: goal, duration: 2100, ease: 'inOutCubic' },
+        { to: goal - 0.012, duration: 160, ease: 'outQuad' },
+        { to: goal, duration: 520, ease: 'outElastic(1, .5)' },
+      ],
+      onComplete() {
+        spin.k = 0;
+      },
+    });
+    let origin = 0;
+    if (event) {
+      const rect = root.getBoundingClientRect();
+      const a = Math.atan2(event.clientX - (rect.left + rect.width / 2), -(event.clientY - (rect.top + rect.height / 2)));
+      origin = Math.round((((a / (Math.PI * 2)) % 1) + 1) % 1 * ticks.length) % ticks.length;
+    }
+    const around = (i) => Math.min(Math.abs(i - origin), ticks.length - Math.abs(i - origin));
+    utils.remove(ticks);
+    animate(ticks, {
+      scale: [{ to: 1.9, duration: 150, ease: 'outQuad' }, { to: 1, duration: 620, ease: 'outElastic(1, .45)' }],
+      opacity: [{ to: 0.35, duration: 150 }, { to: 1, duration: 500 }],
+      delay: (_, i) => around(i) * 26,
+    });
+    animate(numerals, { scale: [{ to: 1.25, duration: 200, ease: 'outQuad' }, { to: 1, duration: 700, ease: 'outElastic(1, .5)' }], delay: stagger(110, { start: 300 }) });
+  }
+  disposer.listen(root, 'pointerdown', wind);
+  if (options.preview) disposer.interval(() => wind(), 5600);
 
   return {
     destroy() {

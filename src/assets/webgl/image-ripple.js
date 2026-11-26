@@ -10,7 +10,7 @@ export const meta = {
   category: 'webgl',
   libs: ['three', 'animejs'],
   description:
-    '画像の上でポインターを動かすと、水面のように波紋が出て色がにじみます。クリックすると、ノイズでちぎれるように次の画像へ切り替わります。images に画像の URL を渡すと自分の写真で使えます。',
+    '画像の上でポインターを動かすと、水面のように波紋が出て色がにじみます。クリックすると、その場所が指で押したようにくぼみ、そこから広がる水の輪の内側がノイズでちぎれながら次の画像に替わって、あとに細かい波紋が残ります。images に画像の URL を渡すと自分の写真で使えます。',
   params: {
     intensity: { type: 'range', label: '波紋の強さ', min: 0, max: 3, step: 0.1, default: 1 },
     shift: { type: 'range', label: '色のにじみ', min: 0, max: 3, step: 0.1, default: 1 },
@@ -73,6 +73,10 @@ uniform float uHover;
 uniform float uIntensity;
 uniform float uShift;
 uniform vec2 uMouse;
+uniform vec2 uOrigin;
+uniform float uReach;
+uniform float uPinch;
+uniform float uAfter;
 varying vec2 vUv;
 ${snoise3}
 vec2 cover(vec2 uv, float imageAspect){
@@ -91,13 +95,24 @@ void main(){
   float ripple = sin(dist * 42.0 - uTime * 7.0) * exp(-dist * 5.5) * uHover * uIntensity;
   uv += normalize(fromMouse + 0.0001) * ripple * 0.018;
 
+  // クリックした場所からの距離。くぼみ、広がる輪、あとに残る波紋に使う。
+  vec2 fromOrigin = (vUv - uOrigin) * vec2(uPlaneAspect, 1.0);
+  float od = length(fromOrigin);
+  vec2 dirO = fromOrigin / (od + 0.0001) / vec2(uPlaneAspect, 1.0);
+  uv -= (vUv - uOrigin) * exp(-od * od * 26.0) * uPinch * 0.55;
+  float after = sin(od * 40.0 - uTime * 9.0) * exp(-od * 3.2) * uAfter;
+  uv += dirO * after * 0.014;
+
   float n = snoise(vec3(vUv * vec2(3.0, 5.0), 1.0)) * 0.5 + 0.5;
-  float edge = vUv.x * 0.6 + n * 0.4;
-  float m = smoothstep(edge - 0.15, edge + 0.15, uProgress * 1.3 - 0.15);
+  float edge = od / uReach * 0.72 + n * 0.28;
+  float m = smoothstep(edge - 0.09, edge + 0.09, uProgress * 1.25 - 0.12);
   float mid = m * (1.0 - m);
-  vec2 offset = vec2(ripple * 0.012 + mid * 0.05, 0.0) * uShift;
-  vec3 a = sampleShifted(uTex1, cover(uv + vec2(m * 0.3 * n, 0.0), uAspect1), offset);
-  vec3 b = sampleShifted(uTex2, cover(uv - vec2((1.0 - m) * 0.3 * n, 0.0), uAspect2), offset);
+  uv += dirO * mid * 0.16;
+  vec2 offset = vec2(ripple * 0.012 + mid * 0.05 + after * 0.01, 0.0) * uShift;
+  vec3 a = sampleShifted(uTex1, cover(uv + dirO * m * 0.22 * n, uAspect1), offset);
+  vec3 b = sampleShifted(uTex2, cover(uv - dirO * (1.0 - m) * 0.22 * n, uAspect2), offset);
+  a += mid * 0.35;
+  b += mid * 0.35;
   gl_FragColor = vec4(mix(a, b, m), 1.0);
 }
 `;
@@ -141,6 +156,10 @@ export function mount(container, options = {}) {
     uIntensity: { value: p.intensity },
     uShift: { value: p.shift },
     uMouse: { value: new THREE.Vector2(0.5, 0.5) },
+    uOrigin: { value: new THREE.Vector2(0.5, 0.5) },
+    uReach: { value: 1 },
+    uPinch: { value: 0 },
+    uAfter: { value: 0 },
   };
   function syncAspects() {
     const nextIndex = (current + 1) % slides.length;
@@ -168,34 +187,75 @@ export function mount(container, options = {}) {
     uniforms.uHover.value += (target - uniforms.uHover.value) * Math.min(1, dt * 4 + 0.02);
   });
 
-  function next() {
-    if (busy) return;
+  let settle = null;
+  function next(event) {
+    const tapped = typeof event?.clientX === 'number';
+    if (busy) {
+      // 自動送りの途中は何もしない。クリックされたときは、途中の切り替えを終わらせてから、その場所で始め直す。
+      if (!tapped || !settle) return;
+      utils.remove(uniforms.uProgress);
+      settle();
+    }
     busy = true;
     const nextIndex = (current + 1) % slides.length;
     uniforms.uTex2.value = slides[nextIndex].texture;
     uniforms.uAspect2.value = slides[nextIndex].aspect;
+    // クリックした場所（自動送りのときは毎回ちがう場所）を、輪の中心にする。
+    const rect = container.getBoundingClientRect();
+    const hasPoint = typeof event?.clientX === 'number' && rect.width > 0 && rect.height > 0;
+    const ox = hasPoint ? (event.clientX - rect.left) / rect.width : 0.2 + Math.random() * 0.6;
+    const oy = hasPoint ? 1 - (event.clientY - rect.top) / rect.height : 0.25 + Math.random() * 0.5;
+    const aspect = uniforms.uPlaneAspect.value;
+    uniforms.uOrigin.value.set(ox, oy);
+    uniforms.uReach.value = Math.hypot(Math.max(ox, 1 - ox) * aspect, Math.max(oy, 1 - oy));
+    const finish = () => {
+      current = nextIndex;
+      uniforms.uTex1.value = slides[current].texture;
+      uniforms.uProgress.value = 0;
+      syncAspects();
+      busy = false;
+      settle = null;
+    };
+    settle = finish;
+    if (stage.reduced) {
+      finish();
+      return;
+    }
+    utils.remove([uniforms.uPinch, uniforms.uAfter]);
+    uniforms.uAfter.value = 0;
+    // 準備: 押した場所がくぼむ。
+    animate(uniforms.uPinch, {
+      value: [
+        { to: 1, duration: 170, ease: 'outQuad' },
+        { to: 0, duration: 520, ease: 'outBack(3)' },
+      ],
+    });
+    // 山場: くぼみから輪が広がり、内側が次の画像に替わる。
     animate(uniforms.uProgress, {
       value: [0, 1],
-      duration: stage.reduced ? 1 : p.duration * 1000,
+      duration: p.duration * 1000,
+      delay: 130,
       ease: 'inOutCubic',
-      onComplete() {
-        current = nextIndex;
-        uniforms.uTex1.value = slides[current].texture;
-        uniforms.uProgress.value = 0;
-        syncAspects();
-        busy = false;
-      },
+      onComplete: finish,
+    });
+    // 余韻: 輪が通り過ぎたあと、細かい波紋が残って消える。
+    animate(uniforms.uAfter, {
+      value: [
+        { to: 1, duration: 300, ease: 'outQuad' },
+        { to: 0, duration: 1500, ease: 'outQuad' },
+      ],
+      delay: 130 + p.duration * 550,
     });
   }
   container.addEventListener('click', next);
-  const timer = p.interval > 0 && !stage.reduced ? setInterval(next, p.interval * 1000) : 0;
+  const timer = p.interval > 0 && !stage.reduced ? setInterval(() => next(), p.interval * 1000) : 0;
 
   return {
     next,
     destroy() {
       clearInterval(timer);
       container.removeEventListener('click', next);
-      utils.remove(uniforms.uProgress);
+      utils.remove([uniforms.uProgress, uniforms.uPinch, uniforms.uAfter]);
       for (const slide of slides) slide.texture.dispose();
       stage.destroy();
     },

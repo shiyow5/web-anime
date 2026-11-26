@@ -11,7 +11,7 @@ export const meta = {
   category: 'cyber',
   libs: ['three', 'animejs'],
   description:
-    '緯線と経線の輪でできた 3 つの殻が、殻ごとに別の軸で回ります。表面を光の点が尾を引いて走り、周りでは小さな表示板が立ったまま球を回ります。数秒ごとに映像が乱れて殻がずれ、クリックでも乱せます。通信網や集計中のデータを表す場面に使えます。',
+    '緯線と経線の輪でできた 3 つの殻が、殻ごとに別の軸で回ります。表面を光の点が尾を引いて走り、周りでは小さな表示板が立ったまま球を回ります。数秒ごとに映像が乱れて殻がずれます。タップすると同期が始まります。殻の回転が止まりかけ、3 つの殻の軸が順に隣の殻の軸へ入れ替わり、映像が乱れたあと、表示板がタップした側から順にせり出して裏返り、別の表示に切り替わります。最後に殻が一気に回って落ち着きます。通信網や集計中のデータを表す場面に使えます。',
   params: {
     color: { type: 'color', label: '線の色', default: '#c8f1ff' },
     accent: { type: 'color', label: '差し色', default: '#a98bff' },
@@ -180,7 +180,7 @@ export function mount(container, options = {}) {
     const intro = new THREE.Group();
     intro.add(outer);
     root.add(intro);
-    return { ...spec, intro, outer, inner, tracks, positions, geometry, t: stage.reduced ? 1 : 0, fx: { shift: 0, boost: 0 } };
+    return { ...spec, swap: { k: 1 }, intro, outer, inner, tracks, positions, geometry, t: stage.reduced ? 1 : 0, fx: { shift: 0, boost: 0 } };
   });
 
   // 足場の輪と方眼。
@@ -203,7 +203,7 @@ export function mount(container, options = {}) {
     stem.position.y = -0.3 - drop / 2;
     holder.add(board, stem);
     orbit.add(holder);
-    return { holder, board, angle, t: stage.reduced ? 1 : 0 };
+    return { holder, board, angle, mesh: board.children[0], flip: { v: 0 }, next: null, t: stage.reduced ? 1 : 0 };
   });
 
   let fit = 1;
@@ -231,6 +231,78 @@ export function mount(container, options = {}) {
         delay: index * 50,
       });
     });
+  }
+
+  // 同期。殻が止まりかけ、軸が順に隣の殻の軸へ入れ替わる（準備）→ 映像が乱れ、表示板がタップした側から順に
+  // せり出して裏返り、別の表示に替わる（山場）→ 殻が一気に回って落ち着く（余韻）。
+  const maps = panels.map((panel) => panel.mesh.material.map);
+  stage.onDispose(() => {
+    for (const map of maps) map.dispose();
+  });
+  const settleMaps = () => {
+    for (const panel of panels) {
+      if (panel.next) panel.mesh.material.map = panel.next;
+      panel.next = null;
+    }
+  };
+  const seen = new THREE.Vector3();
+  let burstTimer = 0;
+  function resync(event) {
+    if (stage.reduced) return;
+    const rect = container.getBoundingClientRect();
+    const nx = event?.clientX === undefined ? (Math.random() < 0.5 ? -0.6 : 0.6) : ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    settleMaps();
+    const tilts = shells.map((shell) => shell.outer.quaternion.clone());
+    shells.forEach((shell, index) => {
+      utils.remove([shell.fx, shell.swap]);
+      shell.fx.shift = 0;
+      const from = tilts[index];
+      const to = tilts[(index + 1) % shells.length];
+      shell.swap.k = 0;
+      animate(shell.swap, {
+        k: 1,
+        duration: 950,
+        delay: 120 + index * 150,
+        ease: 'inOutQuart',
+        onUpdate() {
+          shell.outer.quaternion.copy(from).slerp(to, shell.swap.k);
+        },
+      });
+      animate(shell.fx, {
+        boost: [
+          { to: -0.92, duration: 220, ease: 'outQuad' },
+          { to: -0.92, duration: 500 },
+          { to: 7, duration: 320, ease: 'inQuad' },
+          { to: 0, duration: 1600, ease: 'outExpo' },
+        ],
+        delay: index * 60,
+      });
+    });
+    // タップした側に近い板から順に裏返す。半分まで返ったところで、隣の板の表示に替える。
+    const current = panels.map((panel) => panel.mesh.material.map);
+    const order = panels
+      .map((panel, i) => ({ i, gap: Math.abs(panel.holder.getWorldPosition(seen).project(stage.camera).x - nx) }))
+      .sort((a, b) => a.gap - b.gap);
+    order.forEach(({ i }, rank) => {
+      const panel = panels[i];
+      utils.remove(panel.flip);
+      panel.flip.v = 0;
+      panel.next = current[(i + 1) % panels.length];
+      animate(panel.flip, {
+        v: 1,
+        duration: 760,
+        delay: 480 + rank * 130,
+        ease: 'inOutBack(1.6)',
+        onUpdate() {
+          if (panel.next && panel.flip.v >= 0.5) {
+            panel.mesh.material.map = panel.next;
+            panel.next = null;
+          }
+        },
+      });
+    });
+    clearTimeout(burstTimer);
+    burstTimer = setTimeout(() => noise.burst(1.1), 380);
   }
 
   let nextGlitch = p.interval > 0 ? p.interval * 0.8 : Infinity;
@@ -270,14 +342,15 @@ export function mount(container, options = {}) {
     for (const [i, panel] of panels.entries()) {
       // 板は外を向いたまま、自分の縦軸でゆっくり首を振る。
       panel.board.rotation.y = -panel.angle + Math.PI / 2 + Math.sin(time * 0.8 + i * 1.7) * 0.55;
-      panel.board.rotation.x = Math.sin(time * 0.6 + i) * 0.12;
-      panel.holder.scale.setScalar(Math.max(0.001, panel.t));
+      panel.board.rotation.x = Math.sin(time * 0.6 + i) * 0.12 + panel.flip.v * TAU;
+      panel.holder.scale.setScalar(Math.max(0.001, panel.t) * (1 + Math.sin(Math.PI * Math.min(1, Math.max(0, panel.flip.v))) * 0.35));
     }
     base.rotation.z = time * 0.04;
     root.rotation.set(0.26 + Math.sin(time * 0.21) * 0.08 - stage.pointer.sy * 0.3, Math.sin(time * 0.13) * 0.3 + stage.pointer.sx * 0.5, 0);
   });
 
-  container.addEventListener('pointerdown', glitch);
+  container.addEventListener('pointerdown', resync);
+  const auto = p.preview && !stage.reduced ? setInterval(() => resync(), 5400) : 0;
   if (!stage.reduced) {
     animate(shells, { t: 1, duration: 1600, delay: stagger(240), ease: 'outExpo' });
     animate(panels, { t: 1, duration: 900, delay: stagger(110, { start: 900 }), ease: 'outBack(2)' });
@@ -285,8 +358,13 @@ export function mount(container, options = {}) {
 
   return {
     glitch,
+    resync,
     destroy() {
-      container.removeEventListener('pointerdown', glitch);
+      container.removeEventListener('pointerdown', resync);
+      clearTimeout(burstTimer);
+      clearInterval(auto);
+      for (const shell of shells) utils.remove(shell.swap);
+      for (const panel of panels) utils.remove(panel.flip);
       utils.remove(shells);
       for (const shell of shells) utils.remove(shell.fx);
       utils.remove(panels);

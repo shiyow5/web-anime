@@ -8,7 +8,7 @@ export const meta = {
   category: 'fancy',
   libs: ['animejs'],
   description:
-    '形と色の違う 4 つのボタンが並びます。押すとゼリーのように横へつぶれ、離すと揺れながら元の形に戻って、小さな粒が跳ねます。申し込みや購入のボタン、ゲームのメニュー、子ども向けの画面に使えます。',
+    '形と色の違う 4 つのボタンが並びます。押すとゼリーのように横へつぶれ、押した位置と反対の側へたわみます。離すと揺れながら元の形に戻って小さな粒が跳ね、揺れは同じ皿に乗ったほかのボタンへ、近い順に少し遅れて伝わります。申し込みや購入のボタン、ゲームのメニュー、子ども向けの画面に使えます。',
   params: {
     color1: { type: 'color', label: '色 1', default: '#ff8fab' },
     color2: { type: 'color', label: '色 2', default: '#ffd166' },
@@ -71,15 +71,18 @@ export function mount(container, options = {}) {
     const shadow = h('span', { class: 'ua-jb__shadow' });
     const drops = Array.from({ length: DROPS }, () => h('i', { class: 'ua-jb__drop' }));
     const button = h('button', { class: 'ua-jb__btn', type: 'button', style: { '--c': colors[i], '--w': w, '--h': hgt, '--r': r } }, shadow, drops, body);
-    return { button, body, shadow, drops, pressed: false };
+    return { button, body, shadow, drops, pressed: false, lean: 1 };
   });
   const grid = h('div', { class: 'ua-jb__grid' }, items.map((item) => item.button));
   root.appendChild(grid);
 
-  function squash(item) {
+  function squash(item, event) {
     if (reduced || item.pressed) return;
     item.pressed = true;
-    animate(item.body, { scaleX: 1 + 0.16 * k, scaleY: 1 - 0.24 * k, duration: 130, ease: 'outQuad' });
+    // 押した位置が左なら右へ、右なら左へたわむ。真ん中に近いほど、たわみは小さい。
+    const rect = event && Number.isFinite(event.clientX) ? item.button.getBoundingClientRect() : null;
+    item.lean = rect && rect.width ? Math.max(-1, Math.min(1, ((event.clientX - rect.left) / rect.width - 0.5) * -2.4)) : item.lean >= 0 ? -1 : 1;
+    animate(item.body, { scaleX: 1 + 0.16 * k, scaleY: 1 - 0.24 * k, skewX: -7 * k * item.lean, duration: 130, ease: 'outQuad' });
     animate(item.shadow, { scaleX: 1 + 0.22 * k, opacity: 0.42, duration: 130, ease: 'outQuad' });
   }
 
@@ -92,10 +95,32 @@ export function mount(container, options = {}) {
     animate(item.body, { scaleX: 1, ease: spring({ stiffness: 250, damping: 6 / Math.sqrt(k) }) });
     animate(item.body, {
       skewX: [
-        { to: 5 * k, duration: 110, ease: 'outQuad' },
+        { to: 8 * k * item.lean, duration: 110, ease: 'outQuad' },
         { to: 0, duration: 1100, ease: 'outElastic(1.2, .28)' },
       ],
     });
+    // 余韻: 揺れが皿を伝わって、ほかのボタンも近い順にぷるんと揺れる。
+    const here = item.button.getBoundingClientRect();
+    for (const other of items) {
+      if (other === item || other.pressed) continue;
+      const there = other.button.getBoundingClientRect();
+      const dx = there.left + there.width / 2 - (here.left + here.width / 2);
+      const dy = there.top + there.height / 2 - (here.top + here.height / 2);
+      const far = Math.min(1, Math.hypot(dx, dy) / (unit * 110 || 1));
+      const amount = k * (1 - far * 0.55);
+      const delay = 90 + far * 260;
+      animate(other.body, {
+        skewX: [
+          { to: (dx >= 0 ? 4 : -4) * amount, duration: 140, ease: 'outQuad' },
+          { to: 0, duration: 1000, ease: 'outElastic(1.2, .3)' },
+        ],
+        scaleY: [
+          { to: 1 - 0.07 * amount, duration: 140, ease: 'outQuad' },
+          { to: 1, duration: 900, ease: 'outElastic(1.1, .35)' },
+        ],
+        delay,
+      });
+    }
     animate(item.shadow, { scaleX: 1, opacity: 0.3, ease: spring({ stiffness: 250, damping: 7 }) });
     animate(item.drops, {
       x: { from: 0, to: (_, i) => (i - (DROPS - 1) / 2) * unit * utils.random(5, 9) },
@@ -122,7 +147,7 @@ export function mount(container, options = {}) {
   }
 
   for (const item of items) {
-    disposer.listen(item.button, 'pointerdown', () => squash(item));
+    disposer.listen(item.button, 'pointerdown', (event) => squash(item, event));
     disposer.listen(item.button, 'pointerup', () => release(item));
     disposer.listen(item.button, 'pointerleave', () => release(item));
     disposer.listen(item.button, 'pointercancel', () => release(item));

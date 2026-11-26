@@ -11,7 +11,7 @@ export const meta = {
   category: 'cyber',
   libs: ['three', 'animejs'],
   description:
-    '斜め下から見上げる大きな円盤の上に、高さの違う小さな計器が 6 個浮かび、それぞれ自分の軸で傾いて揺れます。針・波形・棒グラフ・数字が値に合わせて動き、数秒ごとに強いノイズが走って計器の位置がずれ、弾みながら戻ります。クリックでも乱せます。値は setValue で外から渡せます。',
+    '斜め下から見上げる大きな円盤の上に、高さの違う小さな計器が 6 個浮かび、それぞれ自分の軸で傾いて揺れます。針・波形・棒グラフ・数字が値に合わせて動き、数秒ごとに強いノイズが走って計器の位置がずれ、弾みながら戻ります。タップすると較正が始まります。映像が乱れたあと、計器がタップした位置へ顔を向け、近いものから順に値を 0 へ落としてから最大まで振り切り、面を 1 回転させて、弾みながら今の値へ戻ります。足もとの円盤も勢いよく回って落ち着きます。値は setValue で外から渡せます。',
   params: {
     color: { type: 'color', label: '線の色', default: '#cdf3ff' },
     accent: { type: 'color', label: '差し色', default: '#b08cff' },
@@ -102,7 +102,7 @@ export function mount(container, options = {}) {
     face.add(line(ringBand(r - 0.03, r), 0.9));
     face.add(index % 2 ? accent(segmentRing(r + 0.04, r + 0.09, 9 + index, { fill: 0.6 }), 0.7) : accent(circuitRing(r + 0.03, r + 0.13, 22 + index * 3, 50 + index), 0.7));
     const live = [];
-    const item = { ...spec, tilt0: spec.tilt, index, holder, tilt, live, value: autoValue(index, 0), shown: -1, off: { x: 0, y: 0, z: 0, turn: 0 }, t: stage.reduced ? 1 : 0 };
+    const item = { ...spec, tilt0: spec.tilt, index, holder, tilt, live, value: autoValue(index, 0), shown: -1, off: { x: 0, y: 0, z: 0, turn: 0 }, cal: { on: 0, v: 0, face: 0, spin: 0 }, t: stage.reduced ? 1 : 0 };
 
     if (spec.kind === 'needle') {
       face.add(line(tickRing(r - 0.06, 20, 0.07, 0.012, { start: ARC_START, sweep: ARC_SWEEP, major: { every: 5 } }), 0.6));
@@ -197,18 +197,72 @@ export function mount(container, options = {}) {
     }
   }
 
+  // 較正。映像が乱れ、計器がタップした位置へ顔を向ける（準備）→ 近いものから順に 0 へ落ちて最大まで振り切り、
+  // 面が 1 回転する（山場）→ 弾みながら今の値へ戻り、向きもほどける（余韻）。
+  const aim = { x: 0, y: 0 };
+  const deckSpin = { a: 0 };
+  const seen = new THREE.Vector3();
+  let clock = 0;
+  function calibrate(event) {
+    if (stage.reduced) return;
+    const rect = container.getBoundingClientRect();
+    const nx = event?.clientX === undefined ? 0 : ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    const ny = event?.clientY === undefined ? 0.2 : -(((event.clientY - rect.top) / rect.height) * 2 - 1);
+    aim.x = -ny * 0.45;
+    aim.y = nx * 0.6;
+    noise.burst(1);
+    utils.remove(deckSpin);
+    animate(deckSpin, { a: deckSpin.a + 1.8, duration: 2000, delay: 300, ease: 'outExpo' });
+    const order = gauges
+      .map((gauge) => {
+        gauge.holder.getWorldPosition(seen).project(stage.camera);
+        return { gauge, gap: Math.hypot(seen.x - nx, seen.y - ny) };
+      })
+      .sort((a, b) => a.gap - b.gap);
+    order.forEach(({ gauge }, rank) => {
+      const { cal, index } = gauge;
+      const delay = 140 + rank * 120;
+      const live = fixed[index] ?? autoValue(index, (clock + (delay + 1500) / 1000) * p.speed);
+      utils.remove(cal);
+      cal.v = gauge.value;
+      cal.on = 1;
+      cal.spin = 0;
+      animate(cal, {
+        v: [
+          { to: 0, duration: 260, ease: 'inQuad' },
+          { to: 1, duration: 520, ease: 'inOutQuad' },
+          { to: 1, duration: 140 },
+          { to: live, duration: 620, ease: 'outBack(2.2)' },
+        ],
+        delay,
+        onComplete() {
+          cal.on = 0;
+        },
+      });
+      animate(cal, {
+        face: [
+          { to: 1, duration: 320, ease: 'outBack(2)' },
+          { to: 1, duration: delay + 1000 },
+          { to: 0, duration: 1000, ease: 'outElastic(1, .5)' },
+        ],
+      });
+      animate(cal, { spin: TAU, duration: 900, delay: delay + 260, ease: 'inOutQuart' });
+    });
+  }
+
   let nextGlitch = p.interval > 0 ? p.interval * 0.9 : Infinity;
   let readoutAt = 0;
   const tint = new THREE.Color();
   stage.onFrame((time, dt) => {
     noise.update(time, dt);
+    clock = time;
     if (time > nextGlitch) {
       nextGlitch = time + p.interval * (0.75 + Math.random() * 0.5);
       glitch();
     }
     for (const layer of deckLayers) {
       const rest = 1 - layer.t;
-      layer.group.rotation.set(rest * layer.from[0], rest * layer.from[1], time * layer.rate);
+      layer.group.rotation.set(rest * layer.from[0], rest * layer.from[1], time * layer.rate + deckSpin.a * Math.sign(layer.rate || 1));
       layer.group.scale.setScalar(Math.max(0.001, layer.t));
     }
     const follow = 1 - Math.exp(-dt * 6);
@@ -217,7 +271,9 @@ export function mount(container, options = {}) {
     for (const gauge of gauges) {
       const { index, radius: r } = gauge;
       const goal = fixed[index] ?? autoValue(index, time * p.speed);
-      gauge.value += (goal - gauge.value) * (stage.reduced ? 1 : follow);
+      // 較正のあいだは、較正の値をそのまま見せる。
+      if (gauge.cal.on) gauge.value = clamp01(gauge.cal.v);
+      else gauge.value += (goal - gauge.value) * (stage.reduced ? 1 : follow);
       const v = gauge.value;
       if (redraw || gauge.shown < 0) drawReadout(gauge);
       // 値が高い計器は、色が変わる。
@@ -250,9 +306,9 @@ export function mount(container, options = {}) {
       gauge.holder.scale.setScalar(Math.max(0.001, gauge.t));
       // 計器ごとに、据え付けの傾きを中心に別々の軸で揺れる。
       gauge.tilt.rotation.set(
-        gauge.tilt0[0] + Math.sin(time * 0.8 + index) * 0.1 + rest * 1.5,
-        gauge.tilt0[1] + Math.sin(time * 0.6 + index * 2.1) * 0.2 + rest * (index % 2 ? 2 : -2),
-        gauge.tilt0[2] + Math.sin(time * 0.5 + index * 0.7) * 0.06 + gauge.off.turn,
+        gauge.tilt0[0] + Math.sin(time * 0.8 + index) * 0.1 + rest * 1.5 + gauge.cal.face * aim.x,
+        gauge.tilt0[1] + Math.sin(time * 0.6 + index * 2.1) * 0.2 + rest * (index % 2 ? 2 : -2) + gauge.cal.face * aim.y,
+        gauge.tilt0[2] + Math.sin(time * 0.5 + index * 0.7) * 0.06 + gauge.off.turn + gauge.cal.spin,
       );
       gauge.stem.scale.y = Math.max(0.001, gauge.t);
       gauge.stem.position.y = (gauge.height * gauge.t) / 2;
@@ -261,7 +317,8 @@ export function mount(container, options = {}) {
     rig.rotation.set(-0.5 + Math.sin(time * 0.24) * 0.05 - stage.pointer.sy * 0.14, Math.sin(time * 0.17) * 0.28 + stage.pointer.sx * 0.35, -0.08);
   });
 
-  container.addEventListener('pointerdown', glitch);
+  container.addEventListener('pointerdown', calibrate);
+  const autoCal = p.preview && !stage.reduced ? setInterval(() => calibrate(), 6000) : 0;
   if (!stage.reduced) {
     animate(deckLayers, { t: 1, duration: 1300, delay: stagger(160), ease: 'outExpo' });
     animate(gauges, { t: 1, duration: 1100, delay: stagger(130, { start: 500 }), ease: 'outBack(1.6)' });
@@ -277,8 +334,12 @@ export function mount(container, options = {}) {
     auto() {
       fixed.fill(null);
     },
+    calibrate,
     destroy() {
-      container.removeEventListener('pointerdown', glitch);
+      container.removeEventListener('pointerdown', calibrate);
+      clearInterval(autoCal);
+      utils.remove(deckSpin);
+      for (const gauge of gauges) utils.remove(gauge.cal);
       utils.remove(deckLayers);
       utils.remove(gauges);
       for (const gauge of gauges) utils.remove(gauge.off);

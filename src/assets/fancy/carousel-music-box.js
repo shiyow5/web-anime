@@ -10,7 +10,7 @@ export const meta = {
   category: 'fancy',
   libs: ['three', 'animejs'],
   description:
-    'パステル色のオルゴールの上で、回転木馬が回ります。台は水平に回り、屋根は逆向きに回り、馬と星は上下しながら自分の軸でも回り、てっぺんの飾りは傾いた軸で回ります。クリックするとぜんまいが巻かれて、しばらく速く回ります。お祝いや子ども向けの画面に使えます。',
+    'パステル色のオルゴールの上で、回転木馬が回ります。台は水平に回り、屋根は逆向きに回り、馬と星は上下しながら自分の軸でも回り、てっぺんの飾りは傾いた軸で回ります。クリックすると、木馬が止まりかけるあいだに鍵がかちかちと 3 回巻かれ、放すと音符を飛ばしながら勢いよく回り出します。ぜんまいがほどけるにつれてゆっくりになり、止まりかけてからまた元の速さに戻ります。お祝いや子ども向けの画面に使えます。',
   params: {
     color: { type: 'color', label: '台と屋根の色', default: '#ffc2d9' },
     accent: { type: 'color', label: '差し色', default: '#a9dcf5' },
@@ -103,7 +103,7 @@ export function mount(container, options = {}) {
   const preview = Boolean(p.preview);
   const stage = createStage(container, { fov: 34, cameraZ: 10, background: p.background, preview });
   const { scene } = stage;
-  const state = { wind: 0 };
+  const state = { wind: 0, crank: 0, click: 0 };
 
   // やわらかい照明。空と地面の色で全体を包み、斜め上から 1 灯だけ当てる。
   scene.add(new THREE.HemisphereLight('#ffffff', '#ffd9e8', 1.9));
@@ -301,6 +301,56 @@ export function mount(container, options = {}) {
   );
   system.add(flakes);
 
+  // 音符。ぜんまいを放したときに、屋根の縁から 1 つずつ舞い上がる。
+  const noteMap = (pair) =>
+    canvasTexture(64, 64, (ctx) => {
+      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 5;
+      ctx.lineCap = 'round';
+      const heads = pair ? [[18, 48], [44, 42]] : [[26, 46]];
+      for (const [x, y] of heads) {
+        ctx.beginPath();
+        ctx.ellipse(x, y, 9, 6.5, -0.4, 0, TAU);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(x + 8, y - 2);
+        ctx.lineTo(x + 8, y - 32);
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      if (pair) {
+        ctx.lineWidth = 8;
+        ctx.moveTo(26, 16);
+        ctx.lineTo(52, 10);
+      } else {
+        ctx.moveTo(34, 14);
+        ctx.quadraticCurveTo(50, 20, 46, 34);
+      }
+      ctx.stroke();
+    });
+  const noteMaps = [noteMap(false), noteMap(true)];
+  const NOTE_COLORS = ['#ff7fa8', '#5fb0e6', '#f0a93a', '#9a86e8', '#4fc49a'];
+  const notes = Array.from({ length: preview ? 6 : 9 }, (_, i) => {
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: noteMaps[i % 2], color: NOTE_COLORS[i % NOTE_COLORS.length], transparent: true, depthWrite: false, opacity: 0 }));
+    sprite.visible = false;
+    system.add(sprite);
+    return { sprite, t: 0, angle: 0, lean: 0 };
+  });
+  function placeNotes() {
+    for (const note of notes) {
+      const { sprite, t } = note;
+      sprite.visible = t > 0 && t < 1;
+      if (!sprite.visible) continue;
+      const radius = 2.15 + t * 0.75;
+      const a = note.angle + t * 1.4;
+      sprite.position.set(Math.cos(a) * radius + note.lean * t * 0.9, 1.25 + t * 1.75 + Math.sin(t * 9 + note.angle) * 0.08, Math.sin(a) * radius);
+      sprite.scale.setScalar(0.5 * Math.min(1, t * 6) * (1 - t * 0.25));
+      sprite.material.opacity = Math.min(1, (1 - t) * 2.2);
+      sprite.material.rotation = Math.sin(t * 7 + note.angle) * 0.35;
+    }
+  }
+
   // 登場。箱、台、飾り、屋根、てっぺんの順に現れる。
   const parts = [box, platform, canopy, topper].map((object) => ({ object, v: 1 }));
   const applyScale = () => {
@@ -312,16 +362,22 @@ export function mount(container, options = {}) {
   let bobTime = 0;
   let keyTurn = 0;
   function place(dt, time) {
-    const rate = p.speed * (1 + state.wind * 3.2);
+    // wind が負のあいだは止まりかけ、正のあいだは速く回る。
+    const rate = p.speed * Math.max(0.04, 1 + state.wind * 3.2);
+    const lift = Math.max(0, state.wind);
     turn += dt * 0.5 * rate;
     bobTime += dt * rate;
-    keyTurn += dt * (0.5 * p.speed + state.wind * 9);
+    // 鍵は、回っているあいだはほどける向きに回り、巻くときは逆向きに段をつけて回る。
+    keyTurn += dt * 0.5 * rate;
     platform.rotation.y = turn;
     canopy.rotation.y = -turn * 0.6;
-    key.rotation.x = -keyTurn;
+    canopy.position.y = 1.55 + lift * 0.07;
+    key.rotation.x = -keyTurn + state.crank;
+    key.position.x = 2.1 - state.click * 0.09;
+    placeNotes();
     for (const item of riders) {
       const wave = Math.sin(bobTime * 1.7 + item.phase);
-      item.rider.position.y = 1.15 + wave * 0.34;
+      item.rider.position.y = 1.15 + wave * (0.34 + lift * 0.1);
       item.rider.scale.setScalar(Math.max(0.001, item.grow));
       // 馬は前後に揺れながら柱のまわりで少し首を振り、星は柱を軸にして回り続ける。
       if (item.isHorse) item.rider.rotation.set(0, Math.sin(bobTime * 0.85 + item.phase) * 0.3, Math.cos(bobTime * 1.7 + item.phase) * 0.22);
@@ -338,6 +394,7 @@ export function mount(container, options = {}) {
     halo2.rotation.set(bobTime * 1.1, 0, Math.PI / 2);
     flakes.rotation.y = time * 0.04;
     applyScale();
+    box.scale.y *= 1 - state.click * 0.035;
   }
 
   stage.onResize(() => {
@@ -351,24 +408,52 @@ export function mount(container, options = {}) {
     system.position.y = -0.38 * system.scale.y;
   });
 
-  // ぜんまいを巻く。鍵が勢いよく回り、木馬がしばらく速く回る。
+  // ぜんまいを巻く。準備: 止まりかけて鍵を 3 回巻く。山場: 放して音符が飛び、速く回る。余韻: ほどけて止まりかけ、また動く。
   function wind() {
     if (stage.reduced) return;
+    utils.remove(state);
+    utils.remove(notes);
+    const from = state.crank;
+    const clicks = [1, 2, 3].flatMap((n) => [
+      { to: from + n * 1.35, duration: 150, ease: 'outBack(2.5)' },
+      { to: from + n * 1.35, duration: 90 },
+    ]);
     animate(state, {
+      crank: clicks,
+      click: [1, 2, 3].flatMap(() => [
+        { to: 1, duration: 70, ease: 'outQuad' },
+        { to: 0, duration: 170, ease: 'outQuad' },
+      ]),
       wind: [
-        { to: 1, duration: 450, ease: 'outQuad' },
-        { to: 0, duration: 3200, ease: 'inOutSine' },
+        { to: -0.3, duration: 620, ease: 'outQuad' },
+        { to: -0.3, duration: 100 },
+        { to: 1.15, duration: 520, ease: 'outBack(2)' },
+        { to: -0.26, duration: 2700, ease: 'inOutSine' },
+        { to: -0.26, duration: 380 },
+        { to: 0, duration: 1000, ease: 'inOutQuad' },
       ],
     });
+    // 音符は、触った側へ流れる。
+    const lean = stage.pointer.inside ? stage.pointer.x : 0;
+    notes.forEach((note, i) => {
+      note.t = 0;
+      note.angle = (i / notes.length) * TAU * 1.6 + turn;
+      note.lean = lean;
+    });
+    animate(notes, { t: [0, 1], duration: 1900, delay: stagger(150, { start: 760 }), ease: 'outSine' });
   }
 
   let timer = 0;
+  let first = 0;
   if (!stage.reduced) {
     for (const part of parts) part.v = 0;
     for (const item of riders) item.grow = 0;
     animate(parts, { v: 1, duration: 1000, delay: stagger(220), ease: 'outBack(1.5)' });
     animate(riders, { grow: 1, duration: 800, delay: stagger(90, { start: 600 }), ease: 'outElastic(1, .6)' });
-    if (preview) timer = setInterval(wind, 5600);
+    if (preview) {
+      first = setTimeout(wind, 2300);
+      timer = setInterval(wind, 7000);
+    }
   }
   container.addEventListener('pointerdown', wind);
   place(0, 0);
@@ -377,8 +462,10 @@ export function mount(container, options = {}) {
     wind,
     destroy() {
       clearInterval(timer);
+      clearTimeout(first);
       container.removeEventListener('pointerdown', wind);
       utils.remove(state);
+      utils.remove(notes);
       utils.remove(parts);
       utils.remove(riders);
       stage.destroy();

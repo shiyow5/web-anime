@@ -10,7 +10,7 @@ export const meta = {
   category: 'science',
   libs: ['three', 'animejs'],
   description:
-    '8 つの惑星が、実際の公転周期の比で太陽のまわりを回ります。軌道は実際の離心率を持つ楕円で、太陽に近いところでは速く動きます。距離と大きさは見やすいように縮めてあります。ポインターで傾きが変わり、クリックすると時間を早送りします。',
+    '8 つの惑星が、実際の公転周期の比で太陽のまわりを回ります。軌道は実際の離心率を持つ楕円で、太陽に近いところでは速く動きます。距離と大きさは見やすいように縮めてあります。ポインターで傾きが変わり、クリックすると、太陽がいったん縮んで時間が止まりかけ、次の瞬間に太陽が膨らんで光の輪を放ちます。輪が内側の惑星から順に届くたびに、その惑星が膨らんで軌道が明るくなり、同時に時間が早送りになって、ゆっくり元の速さへ戻ります。',
   params: {
     speed: { type: 'range', label: '1 秒で進む年数', min: 0.05, max: 5, step: 0.05, default: 0.6 },
     tilt: { type: 'range', label: '見下ろす角度（度）', min: 15, max: 85, step: 1, default: 58 },
@@ -97,7 +97,7 @@ export function mount(container, options = {}) {
   const p = resolveParams(meta.params, options);
   const stage = createStage(container, { fov: 36, cameraZ: 13, background: p.background, preview: p.preview });
   const sizeScale = p.size * (p.preview ? 1.5 : 1);
-  const state = { boost: 1, appear: stage.reduced ? 1 : 0 };
+  const state = { boost: 1, appear: stage.reduced ? 1 : 0, sun: 0, wave: 0, waveGlow: 0 };
   let years = 0;
 
   // 遠くの星。
@@ -202,6 +202,13 @@ export function mount(container, options = {}) {
     root.scale.setScalar(Math.min(view.width / (OUTER * 2.12), view.height / (OUTER * 2 * Math.sin(tiltRad) + 1.3)));
   });
 
+  // 太陽が放つ光の輪。軌道の面に寝かせる。
+  const flareRing = new THREE.Mesh(
+    new THREE.RingGeometry(0.985, 1, 128),
+    new THREE.MeshBasicMaterial({ color: p.sun, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }),
+  );
+  flareRing.rotation.x = -Math.PI / 2;
+  system.add(flareRing);
   const projected = new THREE.Vector3();
   let shownYear = '';
   stage.onFrame((time, dt) => {
@@ -210,11 +217,15 @@ export function mount(container, options = {}) {
     root.rotation.x = tiltRad - stage.pointer.sy * 0.3;
     root.rotation.z = stage.pointer.sx * 0.12;
     system.rotation.y = time * 0.02 + stage.pointer.sx * 0.5;
-    glow.scale.setScalar(1.9 + Math.sin(time * 1.7) * 0.06);
+    glow.scale.setScalar((1.9 + Math.sin(time * 1.7) * 0.06) * (1 + state.sun * 0.55));
+    flareRing.scale.setScalar(Math.max(0.001, state.wave));
+    flareRing.material.opacity = state.waveGlow * 0.7;
     bodies.forEach((body, index) => {
       const shown = Math.min(1, Math.max(0, state.appear * (bodies.length + 2) - index));
-      body.line.material.opacity = 0.42 * shown;
-      body.mesh.scale.setScalar(Math.max(shown, 1e-3));
+      // 太陽から広がる輪が通るとき、惑星が膨らんで軌道が明るくなる。
+      const hit = Math.max(0, 1 - Math.abs(state.wave - body.a) / 0.55) * state.waveGlow;
+      body.line.material.opacity = Math.min(1, 0.42 * shown + hit * 0.55);
+      body.mesh.scale.setScalar(Math.max(shown * (1 + hit * 1.1), 1e-3));
       if (body.label) {
         body.mesh.getWorldPosition(projected).project(stage.camera);
         const x = (projected.x * 0.5 + 0.5) * stage.size.width + 6;
@@ -232,14 +243,24 @@ export function mount(container, options = {}) {
 
   function fastForward() {
     if (stage.reduced) return;
-    animate(state, { boost: [{ to: 14, duration: 350, ease: 'outQuad' }, { to: 1, duration: 1800, ease: 'inOutQuad' }] });
+    utils.remove(state);
+    state.appear = 1;
+    state.wave = 0;
+    animate(state, {
+      sun: [{ to: -0.35, duration: 260, ease: 'outQuad' }, { to: 1, duration: 150, ease: 'outQuad' }, { to: 0, duration: 1500, ease: 'outElastic(1, .4)' }],
+      boost: [{ to: 0.1, duration: 260, ease: 'outQuad' }, { to: 16, duration: 420, ease: 'outQuad' }, { to: 1, duration: 2200, ease: 'inOutQuad' }],
+      wave: [{ to: 0, duration: 260 }, { to: OUTER * 1.08, duration: 1900, ease: 'outQuad' }],
+      waveGlow: [{ to: 0, duration: 260 }, { to: 1, duration: 100 }, { to: 0, duration: 1800, ease: 'inQuad' }],
+    });
   }
+  const auto = p.preview && !stage.reduced ? setInterval(fastForward, 5600) : 0;
   container.addEventListener('click', fastForward);
   if (!stage.reduced) animate(state, { appear: [0, 1], duration: 2200, ease: 'outQuad' });
 
   return {
     fastForward,
     destroy() {
+      clearInterval(auto);
       container.removeEventListener('click', fastForward);
       utils.remove(state);
       hud.remove();

@@ -9,7 +9,7 @@ export const meta = {
   category: 'nature',
   libs: ['three'],
   description:
-    'やわらかい雲が、奥行きの違う 3 つの層になって流れます。雲の縁は太陽の側だけ明るくなり、すき間から光の筋が差し込みます。時刻を変えると空と雲の色が朝焼けから夜まで移り変わります。クリックすると時刻が 3 時間進み、ポインターを左右に動かすと層がずれて見えます。',
+    'やわらかい雲が、奥行きの違う 3 つの層になって流れます。雲の縁は太陽の側だけ明るくなり、すき間から光の筋が差し込みます。時刻を変えると空と雲の色が朝焼けから夜まで移り変わります。クリックすると、押した場所の雲が手前の層から順に割れて晴れ間ができ、時刻が 3 時間進む間は雲が早回しで流れます。晴れ間は数秒かけてふさがります。ポインターを左右に動かすと層がずれて見えます。',
   params: {
     hour: { type: 'range', label: '時刻', min: 0, max: 24, step: 0.5, default: 17 },
     cycle: { type: 'boolean', label: '時刻を自動で進める', default: false },
@@ -49,6 +49,7 @@ uniform float uShift;
 uniform float uNight;
 uniform float uDisc;
 uniform float uReveal;
+uniform vec3 uHole;
 uniform vec2 uRes;
 uniform vec2 uSun;
 uniform vec3 uTop;
@@ -112,6 +113,10 @@ void main(){
     float n = fbm(p);
     float edge = 0.68 - uCover * 0.34;
     float density = smoothstep(edge, edge + 0.11, n) * band * uReveal;
+    // 晴れ間。手前の層ほど早く大きく開き、縁は雲の模様に沿ってちぎれる。
+    float open = clamp(uHole.z * 1.5 - (1.0 - depth) * 0.5, 0.0, 1.0);
+    float hd = length((q - uHole.xy) * vec2(1.0, 1.5)) + (n - 0.5) * 0.22;
+    density *= 1.0 - open * smoothstep(0.34 + depth * 0.12, 0.1, hd);
     // 太陽の側へ少しずらした場所と比べて、縁が光に向いているかを見る。
     float n2 = fbm(p + sunDir * vec2(1.0, 2.3) * 0.16);
     float lit = clamp(0.55 + (n - n2) * 6.0, 0.0, 1.0);
@@ -150,6 +155,7 @@ export function mount(container, options = {}) {
     uNight: { value: 0 },
     uDisc: { value: 0.05 },
     uReveal: { value: stage.reduced ? 1 : 0 },
+    uHole: { value: new THREE.Vector3(0, 0.6, 0) },
     uRes: { value: new THREE.Vector2(1, 1) },
     uSun: { value: new THREE.Vector2(0, 0.5) },
     uTop: { value: new THREE.Color() },
@@ -196,7 +202,15 @@ export function mount(container, options = {}) {
     applyHour();
   });
   stage.onFrame((time, dt) => {
-    uniforms.uTime.value = 30 + (time - 30) * p.speed;
+    // 時刻を進めている間は、雲も早回しで流れる。
+    lapse += dt * Math.min(40, Math.abs(target - hour) * 16);
+    uniforms.uTime.value = 30 + (time - 30) * p.speed + (stage.reduced ? 0 : lapse);
+    if (holeAge >= 0) {
+      holeAge += dt;
+      uniforms.uHole.value.z = smooth(0, 0.7, holeAge) * (1 - smooth(2.6, 7.5, holeAge));
+      uniforms.uRays.value = p.rays * (1 + uniforms.uHole.value.z * 0.8);
+      if (holeAge > 7.5) holeAge = -1;
+    }
     uniforms.uShift.value = stage.pointer.sx;
     uniforms.uReveal.value = Math.min(1, uniforms.uReveal.value + dt * 0.7);
     if (p.cycle || p.preview) target += dt * (p.preview ? 0.35 : 0.5);
@@ -204,7 +218,15 @@ export function mount(container, options = {}) {
     applyHour();
   });
 
-  function advance() {
+  let lapse = 0;
+  let holeAge = -1;
+  function advance(event) {
+    const rect = container.getBoundingClientRect();
+    if (!stage.reduced && rect.width && rect.height && event && Number.isFinite(event.clientX)) {
+      uniforms.uHole.value.set(((event.clientX - rect.left) / rect.width - 0.5) * aspect, 1 - (event.clientY - rect.top) / rect.height, uniforms.uHole.value.z);
+      // 開いている途中で押し直したら、開いた状態から続ける。
+      holeAge = holeAge >= 0 && holeAge < 2.6 ? Math.min(holeAge, 0.7) : 0;
+    }
     target += 3;
     if (stage.reduced) {
       hour = target;

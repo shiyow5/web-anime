@@ -10,7 +10,7 @@ export const meta = {
   category: 'science',
   libs: ['three', 'animejs'],
   description:
-    'ローレンツ方程式を解いて、蝶の羽のような軌跡を描きます。ほんの少しだけ違う場所から出発した点が、しばらくは重なって進み、やがてまったく別の道を行く様子が分かります。ρ を 24.7 より小さくすると、乱れが消えて渦の中心へ落ち着きます。クリックすると、ほぼ同じ場所から出発し直します。',
+    'ローレンツ方程式を解いて、蝶の羽のような軌跡を描きます。ほんの少しだけ違う場所から出発した点が、しばらくは重なって進み、やがてまったく別の道を行く様子が分かります。ρ を 24.7 より小さくすると、乱れが消えて渦の中心へ落ち着きます。クリックすると、軌跡が頭のほうから消えて箱が勢いよく回り、触った位置に応じた新しい出発点へ全部の点が集まります。そこから点が明るく弾けて早回しで飛び出し、重なっていた軌跡が分かれていく様子を見せてから、元の速さに戻ります。',
   params: {
     rho: { type: 'range', label: 'ρ（レイリー数）', min: 14, max: 45, step: 0.5, default: 28 },
     trails: { type: 'range', label: '軌跡の本数', min: 1, max: 5, step: 1, default: 3 },
@@ -134,10 +134,10 @@ export function mount(container, options = {}) {
     return { s: [0, 0, 0], positions, geometry, head };
   });
 
-  function restart(prefill) {
+  function restart(prefill, x0 = 1, y0 = 1) {
     trails.forEach((trail, index) => {
       // 出発点の差は 1 万分の 1 ずつ。
-      trail.s = [1 + index * 1e-4, 1, centreZ * 0.6];
+      trail.s = [x0 + index * 1e-4, y0, centreZ * 0.6];
       if (prefill) {
         // 過渡的な部分を捨ててから、尾の長さぶんを先に計算しておく。
         for (let i = 0; i < 500; i += 1) lorenzStep(trail.s, p.rho);
@@ -187,8 +187,12 @@ export function mount(container, options = {}) {
 
   let carry = 0;
   let frames = 0;
+  // 出発し直すときの動き。whirl は箱の回転の勢い、rush は計算の早回し、pop は点の大きさ。
+  const fx = { whirl: 0, rush: 0, pop: 0 };
+  let whirled = 0;
   stage.onFrame((time, dt) => {
-    carry += dt * 60 * 3 * p.speed;
+    carry += dt * 60 * 3 * p.speed * (1 + fx.rush);
+    whirled += dt * fx.whirl * 5;
     const steps = Math.min(40, Math.floor(carry));
     carry -= steps;
     for (const trail of trails) {
@@ -200,8 +204,9 @@ export function mount(container, options = {}) {
       const last = (length - 1) * 3;
       trail.head.position.set(trail.positions[last], trail.positions[last + 1], trail.positions[last + 2]);
       trail.head.visible = reveal.value > 0.99;
+      trail.head.scale.setScalar(1 + fx.pop * 2.6);
     }
-    world.rotation.y = time * 0.16;
+    world.rotation.y = time * 0.16 + whirled;
     root.rotation.x = 0.22 - stage.pointer.sy * 0.4;
     root.rotation.y = stage.pointer.sx * 0.7;
     frames += 1;
@@ -218,7 +223,25 @@ export function mount(container, options = {}) {
 
   function relaunch() {
     if (stage.reduced) return;
-    restart(false);
+    const { x, y } = stage.pointer;
+    utils.remove(reveal);
+    utils.remove(fx);
+    // 軌跡を頭のほうから消しながら、箱を回す。
+    // 消えきったところで、触った位置に応じた出発点へ集めて放す。
+    animate(reveal, {
+      value: 0,
+      duration: 320,
+      ease: 'inQuad',
+      onComplete() {
+        restart(false, 1 + x * 9, 1 + y * 9);
+        reveal.value = 1;
+      },
+    });
+    animate(fx, {
+      whirl: [{ to: 1, duration: 320, ease: 'outQuad' }, { to: 0, duration: 1500, ease: 'outCubic' }],
+      rush: [{ to: -0.9, duration: 320 }, { to: 2.4, duration: 200, ease: 'outQuad' }, { to: 0, duration: 2600, ease: 'inOutQuad' }],
+      pop: [{ to: 0, duration: 320 }, { to: 1, duration: 110, ease: 'outQuad' }, { to: 0, duration: 1300, ease: 'outElastic(1, .4)' }],
+    });
   }
   container.addEventListener('click', relaunch);
   if (!stage.reduced) animate(reveal, { value: [0, 1], duration: 2600, ease: 'inOutQuad' });
@@ -228,6 +251,7 @@ export function mount(container, options = {}) {
     destroy() {
       container.removeEventListener('click', relaunch);
       utils.remove(reveal);
+      utils.remove(fx);
       hud.remove();
       stage.destroy();
     },

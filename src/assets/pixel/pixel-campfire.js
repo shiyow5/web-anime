@@ -8,7 +8,7 @@ export const meta = {
   category: 'pixel',
   libs: ['animejs'],
   description:
-    '夜の森で焚き火が揺れ、火の粉が上がり、地面と木々が炎に合わせて明滅します。クリックすると薪がはぜて、炎が大きくなり火の粉が舞います。待機画面や、落ち着いた場面の背景に使えます。',
+    '夜の森で焚き火が揺れ、火の粉が上がり、地面と木々が炎に合わせて明滅します。クリックすると、その場所から薪が弧を描いて火に飛びこみます。着いた瞬間に画面の色が一度だけ反転し、火の粉が扇のように順に上がり、炎が高くなります。そのあと煙が立ちのぼり、明るくなった森の奥で動物の目が順に光って、まばたきをしてから消えます。待機画面や、落ち着いた場面の背景に使えます。',
   params: {
     tone: {
       type: 'select',
@@ -124,7 +124,15 @@ export function mount(container, options = {}) {
   const litGround = [0.14, 0.28, 0.46].map((k) => mix(GROUND, tone[2], k));
   const starCount = p.preview ? 26 : 46;
   const heat = new Float32Array(FIRE_W * FIRE_H);
-  const state = { glow: 1, boost: 0, intro: reduced ? 1 : 0 };
+  const state = { glow: 1, intro: reduced ? 1 : 0 };
+  // タップの仕掛けで動かす値。明滅や登場とは別のオブジェクトにして、連打のときはこれだけ止める。
+  const fx = { boost: 0, eyes: 0 };
+  const EYES = [0.2, 0.31, 0.68, 0.79, 0.44];
+  let logs = [];
+  let smoke = [];
+  let burstDebt = 0;
+  let smokeDebt = 0;
+  let flashFrames = 0;
   const layout = { y0: 72, cx: 80, base: 77 };
   let sparks = [];
   let time = 0;
@@ -133,14 +141,14 @@ export function mount(container, options = {}) {
   let destroyed = false;
 
   function stepFire() {
-    const power = (0.78 + state.boost * 0.5) * state.intro * p.size;
+    const power = (0.78 + fx.boost * 0.5) * state.intro * p.size;
     const center = (FIRE_W - 1) / 2;
     const bottom = (FIRE_H - 1) * FIRE_W;
     for (let x = 0; x < FIRE_W; x += 1) {
       const d = Math.abs(x - center) / (FIRE_W * 0.36);
       heat[bottom + x] = d < 1 ? Math.min(1.2, (1 - d * d) * power * (0.75 + Math.random() * 0.5)) : 0;
     }
-    const cooling = 1 / Math.max(0.4, p.size * (1 + state.boost * 0.4));
+    const cooling = 1 / Math.max(0.4, p.size * (1 + fx.boost * 0.4));
     for (let y = 0; y < FIRE_H - 1; y += 1) {
       for (let x = 0; x < FIRE_W; x += 1) {
         const from = Math.min(FIRE_W - 1, Math.max(0, x + Math.floor(Math.random() * 3) - 1));
@@ -175,6 +183,25 @@ export function mount(container, options = {}) {
       sparkDebt -= 1;
       addSpark(false);
     }
+    // 飛んでいる薪を進める。着いたものは火をはぜさせる。
+    logs = logs.map((log) => ({ ...log, t: log.t + dt / log.duration }));
+    logs.filter((log) => log.t >= 1).forEach(land);
+    logs = logs.filter((log) => log.t < 1);
+    // はぜた火の粉は一度に出さず、0.4 秒ほどかけて順に上げる。
+    if (burstDebt > 0) {
+      const amount = Math.min(burstDebt, Math.ceil(60 * dt));
+      burstDebt -= amount;
+      for (let i = 0; i < amount; i += 1) addSpark(true);
+    }
+    // 炎が落ち着いていく間だけ、煙を上げる。
+    if (fx.boost > 0.04 && fx.boost < 0.75) smokeDebt += 7 * dt;
+    while (smokeDebt >= 1) {
+      smokeDebt -= 1;
+      smoke.push({ x: layout.cx + utils.random(-4, 4, 1), y: layout.base - 22 - fx.boost * 8, life: 0, max: utils.random(1.4, 2.4, 2), phase: Math.random() * 6.28 });
+    }
+    smoke = smoke
+      .map((m) => ({ ...m, life: m.life + dt, x: m.x + Math.sin(time * 1.6 + m.phase) * 4 * dt + 2 * dt, y: m.y - 9 * dt }))
+      .filter((m) => m.life < m.max && m.y > -2);
     sparks = sparks
       .map((s) => ({ ...s, life: s.life + dt, x: s.x + (s.vx + Math.sin(time * 3 + s.phase) * 5) * dt, y: s.y + s.vy * dt }))
       .filter((s) => s.life < s.max && s.y > -2);
@@ -268,6 +295,46 @@ export function mount(container, options = {}) {
     }
   }
 
+  // 飛んでいる薪。放物線の上を、縦横を入れ替えながら回って進む。
+  function drawLogs(ctx) {
+    for (const log of logs) {
+      const k = log.t;
+      const targetY = layout.base - 5;
+      const x = log.x + (layout.cx - log.x) * k;
+      const y = log.y + (targetY - log.y) * k - Math.sin(k * Math.PI) * 16;
+      const upright = Math.floor(k * 8) % 2 === 0;
+      ctx.fillStyle = '#2c190d';
+      ctx.fillRect(Math.round(x) - (upright ? 1 : 3), Math.round(y) - (upright ? 3 : 1), upright ? 3 : 6, upright ? 6 : 3);
+      ctx.fillStyle = mix('#6b3e1c', tone[3], 0.35);
+      ctx.fillRect(Math.round(x) - (upright ? 1 : 3), Math.round(y) - (upright ? 3 : 1), upright ? 1 : 6, upright ? 6 : 1);
+    }
+  }
+
+  function drawSmoke(ctx) {
+    for (const m of smoke) {
+      const k = m.life / m.max;
+      if (k > 0.7 && Math.floor(time * 10 + m.phase) % 2 === 0) continue;
+      ctx.fillStyle = k < 0.5 ? '#6a6478' : '#3f3c52';
+      ctx.fillRect(Math.round(m.x), Math.round(m.y), k < 0.5 ? 2 : 1, 1);
+      if (k < 0.5) ctx.fillRect(Math.round(m.x) + 1, Math.round(m.y) - 1, 1, 1);
+    }
+  }
+
+  // 森の奥で光る目。奥から順に開き、ときどきまばたきをする。
+  function drawEyes(ctx, w) {
+    if (fx.eyes <= 0 || fx.eyes >= 1) return;
+    const open = Math.min(1, Math.max(0, (fx.eyes - 0.08) / 0.3), (1 - fx.eyes) / 0.2);
+    EYES.forEach((fxPos, i) => {
+      if (open < 0.12 + i * 0.18) return;
+      if (Math.sin(time * 4.3 + i * 2.1) > 0.9) return;
+      const x = Math.round(w * fxPos);
+      const y = layout.y0 - 6 - ((i * 5) % 9);
+      ctx.fillStyle = i % 2 === 0 ? tone[4] : tone[5];
+      ctx.fillRect(x - 2, y, 1, 1);
+      ctx.fillRect(x + 1, y, 1, 1);
+    });
+  }
+
   function drawForeground(ctx, w, hgt, glow) {
     const color = mix('#04060b', tone[1], glow * 0.07);
     pine(ctx, Math.round(w * 0.03), hgt + 6, hgt * 0.98, 1.25, color);
@@ -283,14 +350,25 @@ export function mount(container, options = {}) {
 
   function draw() {
     const { ctx, w, h: hgt } = view;
-    const glow = 1 + (state.glow - 1) * p.flicker + state.boost * 0.25;
+    const glow = 1 + (state.glow - 1) * p.flicker + fx.boost * 0.17;
     const lit = glow * state.intro;
     drawSky(ctx, w);
     drawForest(ctx, w, lit);
     drawGround(ctx, w, hgt, lit);
+    drawEyes(ctx, w);
+    drawSmoke(ctx);
     drawFire(ctx);
+    drawLogs(ctx);
     drawSparks(ctx);
     drawForeground(ctx, w, hgt, lit);
+    // 薪が着いた直後の 2 こまだけ、画面の色を反転させる。
+    if (flashFrames > 0) {
+      flashFrames -= 1;
+      ctx.globalCompositeOperation = 'difference';
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, w, hgt);
+      ctx.globalCompositeOperation = 'source-over';
+    }
   }
 
   const view = createPixelView(root, disposer, BASE_W, BASE_H, (v) => {
@@ -311,10 +389,30 @@ export function mount(container, options = {}) {
     });
   }
 
-  function crackle() {
+  // 薪が火に着いたとき。山場（反転・炎・火の粉）と余韻（煙・森の目）をここから始める。
+  function land() {
+    if (destroyed) return;
+    utils.remove(fx);
+    flashFrames = 2;
+    burstDebt = Math.min(60, burstDebt + (p.preview ? 12 : 26));
+    animate(fx, {
+      boost: [
+        { to: 1.3, duration: 140, ease: 'outQuad' },
+        { to: 0, duration: 2600, ease: 'outQuad' },
+      ],
+    });
+    // eyes は 0 から 1 へまっすぐ進む時計。開き具合は drawEyes で山形に直す。
+    animate(fx, { eyes: [0, 1], duration: 3600, ease: 'linear' });
+  }
+
+  // x と y は画素の座標。省くと、左右どちらかの上のほうから薪が飛んでくる。
+  function crackle(x, y) {
     if (destroyed || reduced) return;
-    animate(state, { boost: [1, 0], duration: 1300, ease: 'outQuad' });
-    for (let i = 0; i < (p.preview ? 10 : 22); i += 1) addSpark(true);
+    const fromX = Number.isFinite(x) ? x : view.w * (Math.random() < 0.5 ? 0.16 : 0.84);
+    const fromY = Number.isFinite(y) ? y : layout.y0 * 0.5;
+    if (logs.length >= 4) return;
+    const distance = Math.hypot(fromX - layout.cx, fromY - layout.base);
+    logs = [...logs, { x: fromX, y: fromY, t: 0, duration: Math.min(0.5, 0.22 + distance / 400) }];
   }
 
   if (reduced) {
@@ -346,10 +444,10 @@ export function mount(container, options = {}) {
     },
   });
   disposer.listen(root, 'pointerdown', (event) => {
-    localPointer(event, root);
-    crackle();
+    const at = localPointer(event, root);
+    crackle(at.x * view.w, at.y * view.h);
   });
-  if (p.preview) disposer.interval(crackle, 4200);
+  if (p.preview) disposer.interval(() => crackle(), 4200);
 
   return {
     crackle,
@@ -357,6 +455,7 @@ export function mount(container, options = {}) {
       destroyed = true;
       timer.pause();
       utils.remove(state);
+      utils.remove(fx);
       disposer.run();
       removeRoot(root);
     },

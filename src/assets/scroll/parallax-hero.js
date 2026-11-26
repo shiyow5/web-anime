@@ -8,7 +8,7 @@ export const meta = {
   category: 'scroll',
   libs: ['animejs'],
   description:
-    '遠くの山、手前の山、木立の層が、スクロールで違う速さで動いて奥行きを作ります。進むにつれて日が沈み、星が出て、見出しが山の向こうへ隠れます。ポインターを動かすと層が左右にもずれます。旅や催しのページの最初の画面に使います。',
+    '遠くの山、手前の山、木立の層が、スクロールで違う速さで動いて奥行きを作ります。進むにつれて日が沈み、星が出て、見出しが山の向こうへ隠れます。ポインターを動かすと層が左右にもずれます。景色を押すと、その場所から「ヤッホー」と声の輪が広がり、手前の木立から遠くの山へ順に山肌が揺れて、遠い山ほど小さく遅れたこだまが返ってきます。旅や催しのページの最初の画面に使います。',
   params: {
     title: { type: 'text', label: '見出し', default: '雲の上の稜線へ', maxLength: 16 },
     depth: { type: 'range', label: '奥行きの強さ', min: 0.3, max: 1.6, step: 0.05, default: 1 },
@@ -39,6 +39,10 @@ const CSS = `
 .ua-ph__title p{margin:0;font-size:clamp(9px,1.9cqw,16px);letter-spacing:.3em}
 .ua-ph__title h2{margin:0;font-size:clamp(22px,min(9.5cqw,17cqh),120px);font-weight:800;letter-spacing:.02em;line-height:1.1;
   text-shadow:0 .04em .3em #2b2d6e55}
+.ua-ph__scene{cursor:pointer}
+.ua-ph__call,.ua-ph__wave{position:absolute;z-index:4;translate:-50% -50%;pointer-events:none;opacity:0}
+.ua-ph__call{margin:0;font-size:clamp(11px,min(3.2cqw,5.6cqh),30px);font-weight:800;letter-spacing:.08em;white-space:nowrap;text-shadow:0 .08em .5em #14112bcc}
+.ua-ph__wave{width:min(8cqw,12cqh);aspect-ratio:1;border-radius:50%;border:1.5px solid #fff7ea;box-shadow:0 0 1.2cqw #fff7ea66}
 .ua-ph__hud{position:absolute;left:4cqw;bottom:4cqh;display:grid;gap:.3em;font-size:clamp(9px,1.6cqw,13px);
   font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;letter-spacing:.08em}
 .ua-ph__hud b{font-size:1.7em;font-variant-numeric:tabular-nums}
@@ -129,6 +133,11 @@ export function mount(container, options = {}) {
     scale,
     !p.preview && hint,
   );
+  // こだまの仕掛けに使う部品。声、広がる輪、遠くの山から返る声。
+  const call = h('p', { class: 'ua-ph__call', text: 'ヤッホー', 'aria-hidden': 'true' });
+  const waves = Array.from({ length: 3 }, () => h('i', { class: 'ua-ph__wave', 'aria-hidden': 'true' }));
+  const echoes = Array.from({ length: 3 }, () => h('p', { class: 'ua-ph__call', text: 'ヤッホー', 'aria-hidden': 'true' }));
+  scene.append(...waves, call, ...echoes);
   const pin = h('div', { class: 'ua-ph__pin' }, scene);
   const days = DAYS.map(([day, route, time]) => h('div', { class: 'ua-ph__day' }, h('b', { text: day }), h('span', { text: route }), h('span', { text: time })));
   const button = h('button', { class: 'ua-ph__btn', type: 'button', text: '行程表を見る' });
@@ -181,6 +190,60 @@ export function mount(container, options = {}) {
   });
   disposer.listen(root, 'pointerleave', () => sliders.forEach((slider) => slider.x(0)));
 
+  // こだま。x と y は景色の中の位置（0〜1）。
+  const ridges = layers.map(({ svg }) => svg.firstChild);
+  const starDots = [...stars.children];
+  function echo(x = 0.5, y = 0.4) {
+    utils.remove([call, ...waves, ...echoes, ...ridges, ...starDots]);
+    for (const el of [call, ...waves]) {
+      el.style.left = `${x * 100}%`;
+      el.style.top = `${y * 100}%`;
+    }
+    // 準備: 押した場所に声が出て、輪が広がる。
+    animate(call, {
+      scale: [{ from: 0.3, to: 1.25, duration: 220, ease: 'outBack(3)' }, { to: 1, duration: 300, ease: 'outQuad' }],
+      opacity: [{ from: 0, to: 1, duration: 160 }, { to: 1, duration: 500 }, { to: 0, duration: 500, ease: 'inQuad' }],
+      y: ['0em', '-1.6em'],
+      duration: 1160,
+      ease: 'outQuad',
+    });
+    animate(waves, { scale: [0.3, (_, i) => 5 + i * 3.5], opacity: [{ from: 0, to: 0.9, duration: 100 }, { to: 0, duration: 1100, ease: 'outQuad' }], duration: 1200, delay: stagger(150), ease: 'outExpo' });
+    // 山場: 手前の木立から遠くの山へ、順に山肌が揺れる。遠いほど小さい。
+    [...ridges].reverse().forEach((ridge, k) => {
+      const lift = 2.4 - k * 0.5;
+      animate(ridge, {
+        translateY: [{ to: -lift, duration: 170, ease: 'outQuad' }, { to: 0, duration: 900, ease: 'outElastic(1, .35)' }],
+        delay: 180 + k * 230,
+      });
+    });
+    // 余韻: 遠い山ほど遅れて、小さく薄いこだまが返る。星もまたたく。
+    echoes.forEach((el, k) => {
+      const layer = LAYERS[2 - k];
+      const side = k % 2 === 0 ? 1 : -1;
+      el.style.left = `${utils.clamp(x * 100 + side * (14 + k * 9), 10, 90)}%`;
+      el.style.top = `${layer.top - 3}cqh`;
+      el.style.fontSize = `${0.78 - k * 0.16}em`;
+      animate(el, {
+        opacity: [{ from: 0, to: 0.85 - k * 0.22, duration: 260 }, { to: 0, duration: 900, ease: 'inQuad' }],
+        y: ['0em', '-1.8em'],
+        scale: [0.7, 1],
+        duration: 1160,
+        delay: 620 + k * 430,
+        ease: 'outQuad',
+      });
+    });
+    animate(starDots, { scale: [{ to: 2.4, duration: 200 }, { to: 1, duration: 500 }], delay: stagger(18, { start: 900, from: 'random' }) });
+  }
+  disposer.listen(scene, 'click', (event) => {
+    const { x, y } = localPointer(event, scene);
+    echo(utils.clamp(x, 0.06, 0.94), utils.clamp(y, 0.08, 0.92));
+  });
+  // 行程表のボタン。押すと、行が 1 日目から順に前へ出る。
+  disposer.listen(button, 'click', () => {
+    animate(days, { x: [{ to: 16, duration: 170, ease: 'outQuad' }, { to: 0, duration: 800, ease: 'outElastic(1, .5)' }], delay: stagger(120) });
+  });
+  if (p.preview) disposer.interval(() => echo(0.3 + Math.random() * 0.4, 0.34), 4800);
+
   // 一覧の小さな枠では、自動で上下にスクロールして見せる。
   const scrollState = { top: 0 };
   if (p.preview) {
@@ -201,6 +264,7 @@ export function mount(container, options = {}) {
   }
 
   return {
+    echo,
     destroy() {
       disposer.run();
       utils.remove(scrollState);

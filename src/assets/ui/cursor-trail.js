@@ -8,7 +8,7 @@ export const meta = {
   category: 'ui',
   libs: ['animejs'],
   description:
-    '標準のカーソルの代わりに、点と輪、そのあとを追う尾を表示します。data-ua-hover を付けた要素に乗ると輪が広がり、押すと縮んで弾みます。ポートフォリオなど、演出を前に出したいサイトに向いています。',
+    '標準のカーソルの代わりに、点と輪、そのあとを追う尾を表示します。data-ua-hover を付けた要素に乗ると輪が広がり、押すと輪が縮んで力をため、その場所から波紋と火花が広がり、尾の粒が花火のように散ってからカーソルへ吸い戻されます。ポートフォリオなど、演出を前に出したいサイトに向いています。',
   params: {
     trail: { type: 'range', label: '尾の長さ', min: 0, max: 20, step: 1, default: 10 },
     accent: { type: 'color', label: 'カーソルの色', default: '#ff3d77' },
@@ -29,6 +29,9 @@ const CSS = `
 .ua-ct__dot{width:8px;height:8px;margin:-4px;background:var(--ua-accent);z-index:3}
 .ua-ct__ring{width:40px;height:40px;margin:-20px;border:1.5px solid #fff;mix-blend-mode:difference;z-index:2}
 .ua-ct__tail{background:var(--ua-accent);z-index:1}
+.ua-ct__wave{position:absolute;width:40px;height:40px;margin:-20px;border:1.5px solid var(--ua-accent);border-radius:50%;pointer-events:none;opacity:0}
+.ua-ct__spark{position:absolute;width:0;height:0;pointer-events:none}
+.ua-ct__spark b{position:absolute;left:0;top:-1px;width:14px;height:2px;border-radius:1px;background:var(--ua-ink);transform-origin:0 50%}
 `;
 
 export function mount(container, options = {}) {
@@ -64,11 +67,14 @@ export function mount(container, options = {}) {
     ...tails.map((tail, i) => createAnimatable(tail, { x: 140 + i * 55, y: 140 + i * 55, ease: 'out(3)' })),
   ];
   disposer.add(() => followers.forEach((follower) => follower.revert()));
+  // 散っている間は、尾の粒だけ追いかけるのをやめる。
+  let scattered = false;
   const moveTo = (x, y) => {
-    for (const follower of followers) {
+    followers.forEach((follower, i) => {
+      if (scattered && i >= 2) return;
       follower.x(x);
       follower.y(y);
-    }
+    });
   };
 
   let inside = false;
@@ -82,15 +88,66 @@ export function mount(container, options = {}) {
   });
   disposer.listen(root, 'pointermove', (event) => {
     const { px, py } = localPointer(event, root);
+    last = { x: px, y: py };
     moveTo(px, py);
   });
-  disposer.listen(root, 'pointerdown', () => {
+  // 押すと、輪が縮んで力をため、そこから波紋と火花が出る。尾の粒は花火のように散ってから、カーソルへ吸い戻される。
+  let scatterTimer = 0;
+  let last = { x: 0, y: 0 };
+  const SPARKS = 8;
+  function click(px, py) {
+    last = { x: px, y: py };
     animate(ring, {
       scale: [
-        { to: 0.55, duration: 110, ease: 'outQuad' },
-        { to: 1, duration: 650, ease: 'outElastic(1, .4)' },
+        { to: 0.4, duration: 110, ease: 'outQuad' },
+        { to: 1.5, duration: 200, ease: 'outQuart' },
+        { to: 1, duration: 700, ease: 'outElastic(1, .4)' },
       ],
     });
+    animate(dot, { scale: [{ to: 2.6, duration: 110, ease: 'outQuad' }, { to: 1, duration: 500, ease: 'outBack(3)' }] });
+    const waves = [0, 1].map(() => h('i', { class: 'ua-ct__wave', style: { left: `${px}px`, top: `${py}px` } }));
+    const turn = Math.random() * Math.PI;
+    const sparks = Array.from({ length: SPARKS }, (_, i) => {
+      const deg = ((turn + (i / SPARKS) * Math.PI * 2) * 180) / Math.PI;
+      return h('i', { class: 'ua-ct__spark', style: { left: `${px}px`, top: `${py}px`, transform: `rotate(${deg}deg)` } }, h('b'));
+    });
+    root.append(...waves, ...sparks);
+    animate(waves, {
+      scale: [0.2, (_, i) => 3.2 + i * 2.4],
+      opacity: [{ to: 0.9, duration: 60 }, { to: 0, duration: 640, ease: 'outQuad' }],
+      duration: 700,
+      delay: (_, i) => 110 + i * 150,
+      ease: 'outQuart',
+      onComplete: () => waves.forEach((wave) => wave.remove()),
+    });
+    animate(sparks.map((spark) => spark.firstChild), {
+      translateX: [{ from: 14, to: () => 46 + Math.random() * 30, duration: 420, ease: 'outQuart' }],
+      scaleX: [{ from: 0.2, to: 1, duration: 160, ease: 'outQuad' }, { to: 0, duration: 300, ease: 'inQuad' }],
+      delay: (_, i) => 120 + i * 14,
+      onComplete: () => sparks.forEach((spark) => spark.remove()),
+    });
+    // 尾の粒を放射状に飛ばす。追いかける動きをそのまま使うので、手前の粒から順に遅れて散る。
+    tails.forEach((_, i) => {
+      const angle = turn + (i / Math.max(1, tails.length)) * Math.PI * 2;
+      const reach = 54 + (i % 3) * 22;
+      const follower = followers[i + 2];
+      follower.x(px + Math.cos(angle) * reach);
+      follower.y(py + Math.sin(angle) * reach);
+    });
+    scattered = true;
+    clearTimeout(scatterTimer);
+    scatterTimer = setTimeout(() => {
+      scattered = false;
+      tails.forEach((_, i) => {
+        followers[i + 2].x(last.x);
+        followers[i + 2].y(last.y);
+      });
+    }, 380);
+  }
+  disposer.add(() => clearTimeout(scatterTimer));
+  disposer.listen(root, 'pointerdown', (event) => {
+    const { px, py } = localPointer(event, root);
+    click(px, py);
   });
   for (const target of root.querySelectorAll('[data-ua-hover]')) {
     disposer.listen(target, 'pointerenter', () => animate(ring, { scale: 2.3, duration: 380, ease: 'outBack(2)' }));
@@ -108,6 +165,14 @@ export function mount(container, options = {}) {
     },
   });
   disposer.add(() => idle.pause());
+  if (p.preview) {
+    disposer.interval(() => {
+      if (inside) return;
+      const t = (performance.now() - started) / 1000;
+      const { width, height } = root.getBoundingClientRect();
+      click(width * (0.5 + Math.sin(t * 0.9) * 0.34), height * (0.5 + Math.sin(t * 1.8) * 0.26));
+    }, 2600);
+  }
 
   return {
     destroy() {

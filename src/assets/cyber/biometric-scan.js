@@ -8,7 +8,7 @@ export const meta = {
   category: 'cyber',
   libs: ['animejs'],
   description:
-    '乱数から描いた指紋の上を走査線が上下し、通った場所の筋が明るくなって、特徴点が 1 つずつ光ります。特徴点が線で結ばれると、照合の結果と一致率が出て、また最初からくり返します。クリックすると走査をやり直します。',
+    '乱数から描いた指紋の上を走査線が上下し、通った場所の筋が明るくなって、特徴点が 1 つずつ光ります。特徴点が線で結ばれると、照合の結果と一致率が出て、また最初からくり返します。タップすると指を置き直した扱いになり、タップした位置から波紋が広がって近い筋から順に灯り、走査がやり直されて、前回とは逆の照合結果が出ます。',
   params: {
     ridge: { type: 'color', label: '筋の色', default: '#5b8cff' },
     scan: { type: 'color', label: '走査線の色', default: '#ff4fa3' },
@@ -288,13 +288,48 @@ export function mount(container, options = {}) {
   hexLines.forEach((line) => (line.textContent = hexRow()));
   run();
   disposer.add(() => timeline?.pause());
-  disposer.listen(root, 'click', run);
+
+  // 指を置き直す。タップした位置から波紋が広がり、近い筋から順に灯り（準備）、そのまま走査がやり直されて
+  // 特徴点が拾われ（山場）、照合の結果が出る（余韻）。結果は前回と入れ替わる。
+  const svg = root.querySelector('svg');
+  const ripples = [0, 1, 2].map(() => s('circle', { cx: CX, cy: CY, r: 4, fill: 'none', stroke: p.scan, 'stroke-width': 2, opacity: 0, 'pointer-events': 'none' }));
+  svg.append(...ripples);
+  const dimRidges = [...dim.children];
+  function touch(event) {
+    let x = CX;
+    let y = CY;
+    const matrix = event?.clientX === undefined ? null : svg.getScreenCTM();
+    if (matrix) {
+      const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix.inverse());
+      x = Math.min(480, Math.max(100, point.x));
+      y = Math.min(BOTTOM, Math.max(TOP, point.y));
+    }
+    utils.remove([...ripples, ...dimRidges]);
+    for (const ripple of ripples) {
+      ripple.setAttribute('cx', x.toFixed(1));
+      ripple.setAttribute('cy', y.toFixed(1));
+    }
+    animate(ripples, { r: [4, 250], opacity: [0.95, 0], strokeWidth: [4, 0.5], duration: 1100, ease: 'outQuart', delay: stagger(170) });
+    // タップした位置から、筋の中心までの距離に近い番号の筋を先に灯す。
+    const nearest = Math.min(RIDGES - 1, Math.round((Math.hypot(x - CX, y - CY) / RY) * RIDGES));
+    animate(dimRidges, {
+      opacity: [
+        { to: 1, duration: 160, ease: 'outQuad' },
+        { to: 0.5, duration: 700, ease: 'outQuad' },
+      ],
+      strokeWidth: [{ to: 4.4, duration: 160 }, { to: 2.6, duration: 700 }],
+      delay: stagger(34, { from: nearest }),
+    });
+    run();
+  }
+  disposer.listen(root, 'click', touch);
+  if (p.preview) disposer.interval(() => touch(), 6500);
 
   return {
     rescan: run,
     destroy() {
       disposer.run();
-      utils.remove(score);
+      utils.remove([score, ...ripples, ...dimRidges]);
       removeRoot(root);
     },
   };

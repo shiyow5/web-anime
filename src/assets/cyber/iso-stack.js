@@ -8,7 +8,7 @@ export const meta = {
   category: 'cyber',
   libs: ['animejs'],
   description:
-    '透明な 5 枚の画面を、斜め上から見下ろす角度で重ねました。土台の方眼、地図の点、棒グラフ、コードの行、見出しの板が、それぞれの高さで別々に動きます。全体は開いたり閉じたりをくり返し、ポインターを乗せた板は浮き上がります。サービスの仕組みを層で説明する場面に使えます。',
+    '透明な 5 枚の画面を、斜め上から見下ろす角度で重ねました。土台の方眼、地図の点、棒グラフ、コードの行、見出しの板が、それぞれの高さで別々に動きます。全体は開いたり閉じたりをくり返し、ポインターを乗せた板は浮き上がります。板をタップすると、重なりが開いたまま止まり、その板だけが横へ引き出されて走査の線が通り、層の名前が出てから元の位置へ戻ります。サービスの仕組みを層で説明する場面に使えます。',
   params: {
     lineA: { type: 'color', label: '線の色 A', default: '#5ef2ff' },
     lineB: { type: 'color', label: '線の色 B', default: '#b46bff' },
@@ -41,8 +41,13 @@ const CSS = `
 .ua-is__chrome i:first-child{background:var(--ua-accent)}
 .ua-is__value{margin:0;font-family:var(--ua-display,system-ui,sans-serif);font-size:4.4em;font-weight:800;line-height:1;color:var(--ua-accent)}
 .ua-is__label{margin:0;opacity:.8}
+.ua-is__sweep{position:absolute;top:0;bottom:0;left:0;width:18%;pointer-events:none;opacity:0;
+  background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--ua-accent) 55%,transparent),transparent)}
+.ua-is__tag{position:absolute;right:5%;bottom:4%;margin:0;padding:.2em .6em;font-size:.82em;letter-spacing:.1em;opacity:0;pointer-events:none;
+  color:var(--ua-bg);background:var(--ua-accent);border-radius:.3em}
 `;
 
+const LAYERS = ['GRID', 'NODES', 'METRICS', 'SOURCE', 'STATUS'];
 const items = (n) => Array.from({ length: n }, () => h('i'));
 
 export function mount(container, options = {}) {
@@ -63,13 +68,19 @@ export function mount(container, options = {}) {
     h('div', { class: 'ua-is__lines' }, lines),
     h('div', { class: 'ua-is__head' }, h('div', { class: 'ua-is__chrome' }, items(3)), h('div', {}, value, h('p', { class: 'ua-is__label', text: '稼働中の接続' }))),
   ];
-  const panels = contents.map((content, i) => h('div', { class: 'ua-is__panel', style: { '--c': i % 2 ? p.lineB : p.lineA } }, content));
+  const sweeps = contents.map(() => h('div', { class: 'ua-is__sweep' }));
+  const tags = LAYERS.map((name, i) => h('p', { class: 'ua-is__tag', text: `L${i + 1} / ${name}` }));
+  const panels = contents.map((content, i) => h('div', { class: 'ua-is__panel', style: { '--c': i % 2 ? p.lineB : p.lineA } }, content, sweeps[i], tags[i]));
   const stack = h('div', { class: 'ua-is__stack', style: { transform: `rotateX(${p.angle}deg) rotateZ(-38deg)` } }, panels);
   const scene = h('div', { class: 'ua-is__scene' }, stack);
   root.appendChild(scene);
 
   const state = { gap: reduced ? p.gap : 0.02 };
   const lifts = panels.map(() => ({ v: 0 }));
+  // タップで引き出すときの値。pick は引き出した量、dim は板の濃さ、hold は重なりを開いたまま保つ量。
+  const picks = panels.map(() => ({ v: 0 }));
+  const dims = panels.map(() => ({ v: 1 }));
+  const hold = { v: 0 };
   const counter = { v: 0 };
   let size = 300;
   const measure = () => {
@@ -83,8 +94,11 @@ export function mount(container, options = {}) {
   // 板を下から順に持ち上げる。重なりの中心が枠の中央に来るように、半分だけ下げる。
   function place() {
     panels.forEach((panel, i) => {
-      const z = ((i - (panels.length - 1) / 2) * state.gap + lifts[i].v * 0.07) * size;
-      panel.style.transform = `translateZ(${z.toFixed(1)}px)`;
+      const gap = state.gap + (p.gap - state.gap) * hold.v;
+      const z = ((i - (panels.length - 1) / 2) * gap + lifts[i].v * 0.07 + picks[i].v * 0.05) * size;
+      const slide = picks[i].v * 0.42 * size;
+      panel.style.transform = `translateZ(${z.toFixed(1)}px) translateX(${slide.toFixed(1)}px)`;
+      panel.style.opacity = dims[i].v.toFixed(3);
     });
   }
   place();
@@ -135,10 +149,73 @@ export function mount(container, options = {}) {
     disposer.listen(panel, 'pointerleave', () => animate(lifts[i], { v: 0, ease: lift }));
   });
 
+  // 層の引き出し。開いて止まる（準備）→ タップした板が横へ出て、走査の線と名前が出る（山場）→ 近い板から順に濃さが戻り、板が収まる（余韻）。
+  let cursor = 2;
+  function pullOut(index = cursor) {
+    const chosen = ((index % panels.length) + panels.length) % panels.length;
+    cursor = chosen + 1;
+    utils.remove([hold, ...picks, ...dims, ...sweeps, ...tags]);
+    animate(hold, {
+      v: [
+        { to: 1, duration: 320, ease: 'outQuart' },
+        { to: 0, duration: 700, delay: 2300, ease: 'inOutQuart' },
+      ],
+    });
+    panels.forEach((_, i) => {
+      const far = Math.abs(i - chosen);
+      if (i === chosen) {
+        animate(dims[i], { v: 1, duration: 200 });
+        animate(picks[i], {
+          v: [
+            { to: 1, delay: 220, ease: spring({ stiffness: 140, damping: 13 }) },
+            { to: 0, delay: 1200, ease: spring({ stiffness: 110, damping: 14 }) },
+          ],
+        });
+        return;
+      }
+      animate(picks[i], { v: 0, duration: 300, ease: 'outQuart' });
+      animate(dims[i], {
+        v: [
+          { to: 0.22, duration: 300, delay: far * 60, ease: 'outQuad' },
+          { to: 1, duration: 500, delay: 1900 + far * 110, ease: 'outQuad' },
+        ],
+      });
+    });
+    for (const [i, sweep] of sweeps.entries()) if (i !== chosen) sweep.style.opacity = '0';
+    for (const [i, tag] of tags.entries()) if (i !== chosen) tag.style.opacity = '0';
+    animate(sweeps[chosen], {
+      left: ['-18%', '100%'],
+      opacity: [
+        { to: 1, duration: 60 },
+        { to: 1, duration: 560 },
+        { to: 0, duration: 80 },
+      ],
+      duration: 700,
+      delay: 520,
+      ease: 'inOutQuad',
+    });
+    animate(tags[chosen], {
+      opacity: [
+        { to: 1, duration: 200, delay: 620 },
+        { to: 0, duration: 300, delay: 1300 },
+      ],
+      translateY: [{ from: '60%', to: '0%', duration: 380, delay: 620, ease: 'outBack(2)' }],
+    });
+  }
+  panels.forEach((panel, i) => {
+    disposer.listen(panel, 'click', (event) => {
+      event.stopPropagation();
+      pullOut(i);
+    });
+  });
+  disposer.listen(root, 'click', () => pullOut());
+  if (p.preview) disposer.interval(() => pullOut(), 4400);
+
   return {
+    pullOut,
     destroy() {
       disposer.run();
-      utils.remove([state, counter, ...lifts]);
+      utils.remove([state, counter, hold, ...lifts, ...picks, ...dims, ...sweeps, ...tags]);
       removeRoot(root);
     },
   };
